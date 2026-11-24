@@ -30,7 +30,7 @@ class BleGattProbe(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     @Suppress("DEPRECATION") // 兼容 Android 12 及以下的 GATT 旧接口
-    suspend fun run(log: (String) -> Unit) {
+    suspend fun probe(log: (String) -> Unit) {
         log("—— 蓝牙连接诊断开始 ——")
         val mac = settings.scaleMac ?: run {
             val cloud = MiHomeProbe(context)

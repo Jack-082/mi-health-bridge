@@ -214,7 +214,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
             val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  $it") }
-            runCatching { BleGattProbe(applicationContext).run(log) }
+            runCatching { BleGattProbe(applicationContext).probe(log) }
                 .onFailure { log("蓝牙连接诊断失败：${it.javaClass.simpleName} ${it.message}") }
             launch(Dispatchers.Main) {
                 bleProbing = false
