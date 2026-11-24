@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 期刊插图风格：坐标轴 + 心率曲线（NPG 蓝）+ 峰值标记（NPG 红）+ 终点（NPG 绿） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M34,31 V75 H77"
+        android:strokeColor="#1A1A1A" android:strokeWidth="2.2"
+        android:strokeLineCap="square" android:strokeLineJoin="miter" />
+    <path android:pathData="M34,45 H31 M34,60 H31 M48,75 V78 M63,75 V78"
+        android:strokeColor="#1A1A1A" android:strokeWidth="1.6" />
+    <path android:pathData="M39,61 H47 L51,52 L55,68 L60,37 L65,61 H73"
+        android:strokeColor="#3C5488" android:strokeWidth="3.6"
+        android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:fillColor="#E64B35"
+        android:pathData="M56.2,37 a3.8,3.8 0 1,0 7.6,0 a3.8,3.8 0 1,0 -7.6,0 z" />
+    <path android:fillColor="#00A087"
+        android:pathData="M70.4,61 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0 z" />
+</vector>

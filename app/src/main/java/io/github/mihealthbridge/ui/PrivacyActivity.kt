@@ -10,8 +10,10 @@ class PrivacyActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val text = TextView(this).apply {
-            setPadding(48, 48, 48, 48)
-            textSize = 16f
+            setPadding(56, 72, 56, 56)
+            textSize = 15f
+            setTextColor(0xFF1A1A1A.toInt())
+            setLineSpacing(0f, 1.35f)
             text = """
                 MiHealthBridge 隐私说明
 
