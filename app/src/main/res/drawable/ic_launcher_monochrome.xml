@@ -3,16 +3,20 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:pathData="M34,31 V75 H77"
-        android:strokeColor="#000000" android:strokeWidth="2.2"
-        android:strokeLineCap="square" android:strokeLineJoin="miter" />
-    <path android:pathData="M34,45 H31 M34,60 H31 M48,75 V78 M63,75 V78"
-        android:strokeColor="#000000" android:strokeWidth="1.6" />
-    <path android:pathData="M39,61 H47 L51,52 L55,68 L60,37 L65,61 H73"
-        android:strokeColor="#000000" android:strokeWidth="3.6"
+    <!-- 吊索 -->
+    <path android:pathData="M44,46.3 V62 M64,46.3 V62"
+        android:strokeColor="#000000" android:strokeWidth="2" />
+    <!-- 桥拱 -->
+    <path android:pathData="M34,62 Q54,20 74,62"
+        android:strokeColor="#000000" android:strokeWidth="3.8"
+        android:strokeLineCap="round" />
+    <!-- 桥面：一段心跳波形 -->
+    <path android:pathData="M28,62 H48 L51,56 L54,69 L57,50 L60,62 H80"
+        android:strokeColor="#000000" android:strokeWidth="2.8"
         android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <!-- 两端：小米（起点）→ Health Connect（终点） -->
     <path android:fillColor="#000000"
-        android:pathData="M56.2,37 a3.8,3.8 0 1,0 7.6,0 a3.8,3.8 0 1,0 -7.6,0 z" />
+        android:pathData="M23.2,62 a4.8,4.8 0 1,0 9.6,0 a4.8,4.8 0 1,0 -9.6,0 z" />
     <path android:fillColor="#000000"
-        android:pathData="M70.4,61 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0 z" />
+        android:pathData="M75.2,62 a4.8,4.8 0 1,0 9.6,0 a4.8,4.8 0 1,0 -9.6,0 z" />
 </vector>
