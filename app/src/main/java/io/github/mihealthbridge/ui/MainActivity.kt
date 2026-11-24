@@ -164,8 +164,12 @@ class MainActivity : ComponentActivity() {
 
     private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
 
-    private val versionName: String by lazy {
-        runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull().orEmpty()
+    /** 例如 "0.1.0 (15)"：versionName + versionCode。 */
+    private val versionLabel: String by lazy {
+        runCatching {
+            val info = packageManager.getPackageInfo(packageName, 0)
+            "${info.versionName} (${info.longVersionCode})"
+        }.getOrDefault("")
     }
 
     private val syncWork by lazy {
@@ -343,7 +347,7 @@ class MainActivity : ComponentActivity() {
             Column(Modifier.padding(start = 4.dp, top = 4.dp, bottom = 24.dp)) {
                 Caption("仅向 Health Connect 写入数据，不读取；小米账号凭据加密保存在本机。")
                 Spacer(Modifier.height(2.dp))
-                Caption("MiHealthBridge v$versionName", Palette.Faint)
+                Caption("MiHealthBridge v$versionLabel", Palette.Faint)
             }
         }
     }

@@ -4,6 +4,21 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// ---------------- 版本号：由 Git 自动生成 ----------------
+// versionCode = 提交总数（每次提交 +1，保证新版本总能覆盖旧版本）
+// versionName = 最近的 v* 标签：正好在标签上 → "0.1.0"；
+//               标签之后又有 3 个提交 → "0.1.0-3-gabc1234"；还没有标签 → "0.0.0-12-gabc1234"
+fun git(vararg args: String): String? = runCatching {
+    providers.exec {
+        commandLine("git", *args)
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim().takeIf { it.isNotEmpty() }
+}.getOrNull()
+
+val gitCommitCount: Int = git("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 1
+val gitVersionName: String = git("describe", "--tags", "--match", "v[0-9]*", "--dirty")?.removePrefix("v")
+    ?: "0.0.0-$gitCommitCount-g${git("rev-parse", "--short", "HEAD") ?: "unknown"}"
+
 android {
     namespace = "io.github.mihealthbridge"
     compileSdk = 35
@@ -12,8 +27,8 @@ android {
         applicationId = "io.github.mihealthbridge"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = gitCommitCount
+        versionName = gitVersionName
     }
 
     // 可选的固定签名：在 CI 里通过环境变量提供，保证每次构建的 APK 能覆盖安装。
@@ -39,6 +54,15 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+        }
+    }
+
+    // 输出文件名带版本号，例如 MiHealthBridge-0.1.0-release.apk
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
+                "MiHealthBridge-${variant.versionName}-${variant.name}.apk"
         }
     }
 

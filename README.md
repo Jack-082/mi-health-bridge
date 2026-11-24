@@ -51,6 +51,10 @@ NFC 公交卡、支付、消息通知、表盘这些官方功能都不受影响�
 > 想直接覆盖升级，请在仓库 Secrets 中配置：
 > `SIGNING_KEYSTORE_BASE64`（`base64 -i release.jks`）、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`，以及可选的 `SIGNING_KEY_PASSWORD`（不配置时沿用 keystore 密码）。
 
+> **版本号自动生成**：`versionCode` 是 Git 提交总数，`versionName` 来自最近的 `v*` 标签
+> （在标签上为 `0.1.0`，标签后有新提交时为 `0.1.0-3-gabc1234`）。发布新版本只需打标签：
+> `git tag v0.2.0 && git push origin v0.2.0`。
+
 ### 方式 B：本地构建
 
 用 Android Studio 打开项目（会自动下载 Gradle），或执行：
