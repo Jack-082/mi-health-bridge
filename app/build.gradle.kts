@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    // 构建时收集全部依赖（含间接依赖）的许可证，供 App 内“开源许可”页面显示
+    id("com.mikepenz.aboutlibraries.plugin")
 }
 
 // ---------------- 版本号：由 Git 自动生成 ----------------
@@ -18,6 +20,33 @@ fun git(vararg args: String): String? = runCatching {
 val gitCommitCount: Int = git("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 1
 val gitVersionName: String = git("describe", "--tags", "--match", "v[0-9]*", "--dirty")?.removePrefix("v")
     ?: "0.0.0-$gitCommitCount-g${git("rev-parse", "--short", "HEAD") ?: "unknown"}"
+
+// ---------------- 把仓库根目录的 LICENSE / NOTICE 打包进 APK 的 assets ----------------
+abstract class CopyLegalFiles : DefaultTask() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val sources: ConfigurableFileCollection
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun copy() {
+        val out = outputDir.get().asFile
+        out.mkdirs()
+        sources.files.forEach { it.copyTo(File(out, it.name), overwrite = true) }
+    }
+}
+
+val copyLegalFiles = tasks.register<CopyLegalFiles>("copyLegalFiles") {
+    sources.from(rootProject.file("LICENSE"), rootProject.file("NOTICE"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(copyLegalFiles, CopyLegalFiles::outputDir)
+    }
+}
 
 android {
     namespace = "io.github.mihealthbridge"
@@ -95,6 +124,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.mikepenz:aboutlibraries-core:11.2.3")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

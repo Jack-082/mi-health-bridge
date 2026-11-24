@@ -114,6 +114,8 @@ jobs:
           set -euo pipefail
           apk="$(ls app/build/outputs/apk/release/*.apk | head -1)"
           notes="MiHealthBridge ${GITHUB_REF_NAME}，更新说明见 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+          description="把小米运动健康云端的健康数据同步到 Android Health Connect。开源项目（Apache-2.0）：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}
+          免责声明：本应用为个人开发的开源工具，与小米公司及 Google 无任何关联，未获其授权或认可；“小米”“Xiaomi”“Mi”为小米公司商标，Health Connect 为 Google LLC 商标。本应用使用小米非官方接口读取用户本人账号数据，风险由使用者自行承担；数据仅供个人参考，不能用于医疗诊断。"
           install_args=()
           if [ -n "${PGYER_PASSWORD:-}" ]; then
             install_args=(--data-urlencode "buildInstallType=2" --data-urlencode "buildPassword=${PGYER_PASSWORD}")
@@ -123,6 +125,7 @@ jobs:
           token="$(curl -sS -X POST https://www.pgyer.com/apiv2/app/getCOSToken \
             --data-urlencode "_api_key=${PGYER_API_KEY}" \
             --data-urlencode "buildType=android" \
+            --data-urlencode "buildDescription=${description}" \
             --data-urlencode "buildUpdateDescription=${notes}" \
             "${install_args[@]}")"
           if [ "$(jq -r .code <<<"$token")" != "0" ]; then

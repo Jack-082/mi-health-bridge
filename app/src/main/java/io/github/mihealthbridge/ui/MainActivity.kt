@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,9 +29,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -41,12 +44,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.lifecycleScope
@@ -95,6 +100,7 @@ class MainActivity : ComponentActivity() {
     private var hcStatus by mutableIntStateOf(HealthConnectClient.SDK_UNAVAILABLE)
     private var batteryIgnored by mutableStateOf(false)
     private var logExpanded by mutableStateOf(false)
+    private var showDisclaimer by mutableStateOf(false)
 
     private val permissionLauncher =
         registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { refresh() }
@@ -112,6 +118,7 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         settings = Settings(this)
+        showDisclaimer = !settings.disclaimerAccepted
         SyncScheduler.ensurePeriodic(this)
         lifecycleScope.launch(Dispatchers.IO) { runCatching { SyncScheduler.ensureFast(applicationContext) } }
         setContent { BridgeTheme { Surface(Modifier.fillMaxSize(), color = Palette.Tint) { Screen() } } }
@@ -177,8 +184,45 @@ class MainActivity : ComponentActivity() {
             .getWorkInfosFlow(WorkQuery.fromUniqueWorkNames(SyncScheduler.UNIQUE_NAMES))
     }
 
+    /** 首次启动：阅读并同意免责声明后才能使用；不同意则退出。 */
+    @Composable
+    private fun DisclaimerDialog() {
+        AlertDialog(
+            onDismissRequest = {},
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            containerColor = Palette.Paper,
+            title = { Text(Legal.DISCLAIMER_TITLE, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Legal.DISCLAIMER.forEach { Text("• $it", fontSize = 13.sp, lineHeight = 19.sp, color = Palette.Ink) }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    settings.disclaimerAccepted = true
+                    showDisclaimer = false
+                }) { Text("同意并继续", color = Palette.Navy, fontWeight = FontWeight.Medium) }
+            },
+            dismissButton = {
+                TextButton(onClick = { finish() }) { Text("不同意，退出", color = Palette.Muted) }
+            },
+        )
+    }
+
+    @Composable
+    private fun FooterLink(text: String, onClick: () -> Unit) {
+        Text(
+            text, Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = onClick).padding(vertical = 4.dp, horizontal = 2.dp),
+            fontSize = 12.sp, color = Palette.Navy,
+        )
+    }
+
     @Composable
     private fun Screen() {
+        if (showDisclaimer) DisclaimerDialog()
         // 每 3 秒刷新一次显示（同步在后台 Worker 中进行）
         LaunchedEffect(Unit) {
             while (true) { delay(3000); refreshTick++ }
@@ -346,7 +390,12 @@ class MainActivity : ComponentActivity() {
 
             Column(Modifier.padding(start = 4.dp, top = 4.dp, bottom = 24.dp)) {
                 Caption("仅向 Health Connect 写入数据，不读取；小米账号凭据加密保存在本机。")
-                Spacer(Modifier.height(2.dp))
+                Caption("与小米公司及 Google 无关联；数据仅供个人参考，不能用于医疗诊断。")
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FooterLink("免责声明") { LegalActivity.disclaimer(this@MainActivity) }
+                    Text("·", fontSize = 12.sp, color = Palette.Faint)
+                    FooterLink("开源许可") { LegalActivity.licenses(this@MainActivity) }
+                }
                 Caption("MiHealthBridge v$versionLabel", Palette.Faint)
             }
         }

@@ -8,3 +8,51 @@ endpoint paths and field parsing) is ported from HealthMi
 (https://github.com/ShawnDiego/HealthMi, Apache-2.0), which in turn is based on
 mi-fitness-mcp-cn (MIT, Copyright (c) 2026 Aleksej Kubulashvili).
 The crypto unit-test vectors come from the same project.
+
+------------------------------------------------------------------------------
+Third-party notices
+------------------------------------------------------------------------------
+
+HealthMi (https://github.com/ShawnDiego/HealthMi) — Apache License 2.0.
+Its NOTICE file reads:
+
+    HealthMi
+    Copyright 2026 HealthMi contributors
+
+    This product includes software developed by the HealthMi project.
+
+    It is licensed under the Apache License, Version 2.0. See the LICENSE file
+    for the full license text.
+
+    Third-party components:
+
+    - tools/mi-fitness-mcp-cn — MIT License, Copyright (c) 2026 Aleksej Kubulashvili.
+      See tools/mi-fitness-mcp-cn/LICENSE for details.
+
+mi-fitness-mcp-cn — MIT License:
+
+    MIT License
+
+    Copyright (c) 2026 Aleksej Kubulashvili
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+Android libraries used by the app (AndroidX, Kotlin, OkHttp and others) are
+listed with their licenses on the in-app "开源许可" screen, generated at build
+time by AboutLibraries.

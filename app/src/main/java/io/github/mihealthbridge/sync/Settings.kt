@@ -59,6 +59,11 @@ class Settings(context: Context) {
         get() = prefs.getString("lastReport", "") ?: ""
         set(v) = prefs.edit().putString("lastReport", v).apply()
 
+    /** 用户是否已阅读并同意免责声明（首次启动时弹窗）。 */
+    var disclaimerAccepted: Boolean
+        get() = prefs.getBoolean("disclaimerAccepted", false)
+        set(v) = prefs.edit().putBoolean("disclaimerAccepted", v).apply()
+
     var needsRelogin: Boolean
         get() = prefs.getBoolean("needsRelogin", false)
         set(v) = prefs.edit().putBoolean("needsRelogin", v).apply()

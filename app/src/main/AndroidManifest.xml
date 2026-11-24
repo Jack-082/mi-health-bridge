@@ -43,6 +43,11 @@
             android:name=".ui.LoginActivity"
             android:exported="false" />
 
+        <!-- 免责声明 / 开源许可 -->
+        <activity
+            android:name=".ui.LegalActivity"
+            android:exported="false" />
+
         <!-- Health Connect 要求的隐私说明页（Android 13 及以下） -->
         <activity
             android:name=".ui.PrivacyActivity"
