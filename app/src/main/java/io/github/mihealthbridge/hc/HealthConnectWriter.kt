@@ -5,10 +5,14 @@ import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
 import androidx.health.connect.client.records.BodyFatRecord
+import androidx.health.connect.client.records.BodyWaterMassRecord
+import androidx.health.connect.client.records.BoneMassRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.LeanBodyMassRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RespiratoryRateRecord
@@ -93,6 +97,10 @@ class HealthConnectWriter(context: Context) {
             RespiratoryRateRecord::class,
             WeightRecord::class,
             BodyFatRecord::class,
+            BodyWaterMassRecord::class,
+            BoneMassRecord::class,
+            LeanBodyMassRecord::class,
+            BasalMetabolicRateRecord::class,
             ExerciseSessionRecord::class,
         )
 
@@ -110,6 +118,10 @@ class HealthConnectWriter(context: Context) {
             RespiratoryRateRecord::class to "呼吸频率",
             WeightRecord::class to "体重",
             BodyFatRecord::class to "体脂率",
+            BodyWaterMassRecord::class to "体内水分",
+            BoneMassRecord::class to "骨量",
+            LeanBodyMassRecord::class to "去脂体重",
+            BasalMetabolicRateRecord::class to "基础代谢",
             ExerciseSessionRecord::class to "运动记录",
         )
 

@@ -64,6 +64,31 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("disclaimerAccepted", false)
         set(v) = prefs.edit().putBoolean("disclaimerAccepted", v).apply()
 
+    /** 是否同步米家 App 绑定的体脂秤。 */
+    var scaleEnabled: Boolean
+        get() = prefs.getBoolean("scaleEnabled", false)
+        set(v) = prefs.edit().putBoolean("scaleEnabled", v).apply()
+
+    /** 自动探测到的体脂秤型号（如 yunmai.scales.ms103）；空 = 尚未探测到。 */
+    var scaleModel: String
+        get() = prefs.getString("scaleModel", "") ?: ""
+        set(v) = prefs.edit().putString("scaleModel", v).apply()
+
+    /** 上次探测型号的时刻；没探测到时每 6 小时最多重试一次。 */
+    var scaleProbeAt: Long
+        get() = prefs.getLong("scaleProbeAt", 0L)
+        set(v) = prefs.edit().putLong("scaleProbeAt", v).apply()
+
+    /** 只同步这个秤上成员的数据；空 = 秤上只有一位成员时自动同步。 */
+    var scaleMember: String
+        get() = prefs.getString("scaleMember", "") ?: ""
+        set(v) = prefs.edit().putString("scaleMember", v).apply()
+
+    /** 在称重数据里见过的成员名称（供界面选择）。 */
+    var scaleMembersSeen: List<String>
+        get() = (prefs.getString("scaleMembers", "") ?: "").split('\n').filter { it.isNotEmpty() }
+        set(v) = prefs.edit().putString("scaleMembers", v.distinct().joinToString("\n")).apply()
+
     var needsRelogin: Boolean
         get() = prefs.getBoolean("needsRelogin", false)
         set(v) = prefs.edit().putBoolean("needsRelogin", v).apply()

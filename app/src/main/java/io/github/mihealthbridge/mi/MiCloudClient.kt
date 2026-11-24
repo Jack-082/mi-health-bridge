@@ -3,6 +3,7 @@ package io.github.mihealthbridge.mi
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -92,6 +93,40 @@ class MiCloudClient(private val baseUrl: String = CN_BASE_URL) {
     fun fetchSportRecords(session: MiSession, startSec: Long, endSec: Long): List<MiItem> =
         paginate(session, SPORT_PATH, "sport", startSec, endSec, limit = 50, listField = "sport_records")
 
+    /**
+     * 米家 App 绑定的体脂秤：经小米运动健康云的 eco 代理接口按型号查询（仅中国大陆区）。
+     * 从最新一条往前翻页，每页 20 条；翻到早于 [sinceMs] 的数据就停止。
+     */
+    fun fetchScaleData(session: MiSession, model: String, sinceMs: Long): List<ScaleWeighIn> {
+        val uid = session.userId.toLongOrNull() ?: throw IOException("userId 不是数字：${session.userId}")
+        val out = ArrayList<ScaleWeighIn>()
+        var begin = System.currentTimeMillis()
+        for (page in 1..MAX_PAGES) {
+            val inner = "{\"param\":{\"endTime\":1,\"beginTime\":$begin},\"model\":${JSONObject.quote(model)},\"uid\":$uid,\"did\":0}"
+            val data = "{\"eco_api\":\"eco/scale/getData\",\"params\":${JSONObject.quote(inner)}}"
+            val items = ecoProxyArray(request(session, ECO_PROXY_PATH, data))
+            val (weighIns, count, oldest) = MiScaleParser.parsePage(items)
+            out += weighIns
+            if (count < SCALE_PAGE_SIZE || oldest == null || oldest < sinceMs || oldest >= begin) return out
+            begin = oldest
+            Thread.sleep(200)
+        }
+        throw IOException("体脂秤分页超过上限")
+    }
+
+    /** eco 代理的结果是 {"resp": "<JSON 字符串>"}，里面再包一层 {code, message, result}。 */
+    private fun ecoProxyArray(result: JSONObject): JSONArray {
+        val resp = result.optString("resp").ifEmpty { throw MiApiException(-1, "eco 代理响应缺少 resp") }
+        val inner = JSONObject(resp)
+        val code = inner.optInt("code", 0)
+        if (code != 0) throw MiApiException(code, inner.optString("message"))
+        return when (val r = inner.opt("result")) {
+            is JSONArray -> r
+            is String -> runCatching { JSONArray(r) }.getOrDefault(JSONArray())
+            else -> JSONArray()
+        }
+    }
+
     private fun paginate(
         session: MiSession, path: String, key: String,
         startSec: Long, endSec: Long, limit: Int?, listField: String,
@@ -162,6 +197,8 @@ class MiCloudClient(private val baseUrl: String = CN_BASE_URL) {
         private const val LOGIN_PREFIX = "&&&START&&&"
         private const val DATA_PATH = "/app/v1/data/get_fitness_data_by_time"
         private const val SPORT_PATH = "/app/v1/data/get_sport_records_by_time"
+        private const val ECO_PROXY_PATH = "/app/v1/eco/api_proxy"
+        private const val SCALE_PAGE_SIZE = 20
         private const val MAX_PAGES = 200
         private const val AUTH_ERROR_CODE = 70016
 

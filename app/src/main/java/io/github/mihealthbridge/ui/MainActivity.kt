@@ -80,6 +80,10 @@ internal data class UiState(
     val initialDays: Int,
     val log: String,
     val report: SyncReport?,
+    val scaleEnabled: Boolean,
+    val scaleModel: String,
+    val scaleMember: String,
+    val scaleMembers: List<String>,
 )
 
 /** 后台同步任务的状态。 */
@@ -165,6 +169,10 @@ class MainActivity : ComponentActivity() {
         initialDays = settings.initialDays,
         log = settings.log,
         report = SyncReport.fromJson(settings.lastReport),
+        scaleEnabled = settings.scaleEnabled,
+        scaleModel = settings.scaleModel,
+        scaleMember = settings.scaleMember,
+        scaleMembers = settings.scaleMembersSeen,
     )
 
     private fun openLogin() = loginLauncher.launch(Intent(this, LoginActivity::class.java))
@@ -350,9 +358,60 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val scaleStatus = when {
+                !s.scaleEnabled -> Status.None
+                s.scaleModel.isEmpty() -> Status.Warn
+                s.scaleMember.isEmpty() && s.scaleMembers.size > 1 -> Status.Warn
+                else -> Status.Ok
+            }
+            Section("米家体脂秤", scaleStatus) {
+                Caption("同步绑定在米家 App 中的体脂秤（如小米体脂秤 S400），使用上面的小米账号，无需另外登录。")
+                Segmented(
+                    options = listOf(false to "关闭", true to "开启"),
+                    selected = s.scaleEnabled,
+                ) { on ->
+                    settings.scaleEnabled = on
+                    if (on) {
+                        settings.scaleProbeAt = 0L // 立即探测型号
+                        SyncScheduler.syncNow(this@MainActivity, full = true)
+                        toast("已开启，正在拉取最近 ${s.initialDays} 天的称重数据")
+                    }
+                    refresh()
+                }
+                if (s.scaleEnabled) {
+                    StatRow("型号", s.scaleModel.ifEmpty { "探测中 / 未找到" })
+                    if (s.scaleMembers.isNotEmpty()) {
+                        FieldLabel("只同步这位成员")
+                        Segmented(
+                            options = listOf("" to "自动") + s.scaleMembers.map { it to it },
+                            selected = s.scaleMember,
+                        ) { m ->
+                            settings.scaleMember = m
+                            SyncScheduler.syncNow(this@MainActivity, full = true)
+                            refresh()
+                        }
+                        Caption(
+                            if (s.scaleMembers.size > 1 && s.scaleMember.isEmpty())
+                                "秤上有多位家庭成员，请选择你自己，否则不会写入任何称重数据。"
+                            else "「自动」：秤上只有一位成员时直接同步。",
+                            if (s.scaleMembers.size > 1 && s.scaleMember.isEmpty()) Palette.Red else Palette.Muted,
+                        )
+                    }
+                    if (s.scaleModel.isNotEmpty()) {
+                        SecondaryButton("重新探测型号", Modifier.fillMaxWidth()) {
+                            settings.scaleModel = ""
+                            settings.scaleProbeAt = 0L
+                            SyncScheduler.syncNow(this@MainActivity)
+                            refresh()
+                        }
+                    }
+                    Caption("写入：体重、体脂率、体内水分、骨量、去脂体重、基础代谢。新增类型需要在上方重新「授权写入」。")
+                }
+            }
+
             val logLines = s.log.lines().filter { it.isNotBlank() }
             Section("日志") {
-                // 模块一：最近一次同步，11 类数据各自的结果
+                // 模块一：最近一次同步，各类数据各自的结果
                 val report = s.report
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("最近一次同步", Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Palette.Ink)

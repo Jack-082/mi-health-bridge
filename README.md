@@ -50,7 +50,15 @@ NFC 公交卡、支付、消息通知、表盘这些官方功能都不受影响�
 | 睡眠（含深睡/浅睡/REM/清醒分期） | SleepSession | 每次同步先清理本应用写过的睡眠再重写，避免同一晚出现重复记录 |
 | 睡眠平均呼吸率 | RespiratoryRate | |
 | 运动记录 | ExerciseSession | 距离和热量写在备注里，避免和每日汇总重复计数 |
-| 体重 / 体脂（体脂秤） | Weight / BodyFat | |
+| 体脂秤：体重 / 体脂率 / 体内水分 / 骨量 / 去脂体重 / 基础代谢 | Weight / BodyFat / BodyWaterMass / BoneMass / LeanBodyMass / BasalMetabolicRate | 绑定在小米运动健康或**米家 App** 的秤都支持，见下文 |
+
+### 米家体脂秤
+
+绑定在米家 App 的体脂秤（如小米体脂秤 S400），称重数据也会上传到小米云。打开「米家体脂秤」开关后，应用会用同一个小米账号读取，不需要另外登录米家。
+
+- 型号自动探测，目前候选：`yunmai.scales.ms103`（国行 S400）、`yunmai.scales.ms107`、`xiaomi.scales.ms110`、`yunmai.scales.ms104`。
+- 秤上有多位家庭成员时，必须先在界面里选择你自己，否则不写入，避免家人的体重混进你的健康数据。
+- 接口和字段参考 [SmartScaleConnect](https://github.com/AlexxIT/SmartScaleConnect)（MIT），只在中国大陆区账号上可用，未在所有型号上实测。
 
 压力和 HRV 不同步：Health Connect 没有压力类型，小米 HRV 的口径也和 Health Connect 的 RMSSD 不同。
 

@@ -1,10 +1,14 @@
 package io.github.mihealthbridge.hc
 
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
 import androidx.health.connect.client.records.BodyFatRecord
+import androidx.health.connect.client.records.BodyWaterMassRecord
+import androidx.health.connect.client.records.BoneMassRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.LeanBodyMassRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RespiratoryRateRecord
@@ -18,7 +22,9 @@ import androidx.health.connect.client.units.Energy
 import androidx.health.connect.client.units.Length
 import androidx.health.connect.client.units.Mass
 import androidx.health.connect.client.units.Percentage
+import androidx.health.connect.client.units.Power
 import io.github.mihealthbridge.mi.MiItem
+import io.github.mihealthbridge.mi.ScaleWeighIn
 import io.github.mihealthbridge.mi.firstLong
 import io.github.mihealthbridge.mi.optDoubleOrNull
 import io.github.mihealthbridge.mi.optLongOrNull
@@ -38,12 +44,13 @@ class RecordMapper(
     private val defaultOffset: ZoneOffset = ZoneOffset.ofHours(8),
 ) {
     private val device = Device(manufacturer = "Xiaomi", model = "Smart Band", type = Device.TYPE_WATCH)
+    private val scaleDevice = Device(manufacturer = "Xiaomi", model = "Body Composition Scale", type = Device.TYPE_SCALE)
     private val now: Instant = Instant.ofEpochMilli(nowMillis)
 
-    private fun meta(id: String) = Metadata(
+    private fun meta(id: String, dev: Device = device) = Metadata(
         clientRecordId = id,
         clientRecordVersion = nowMillis,
-        device = device,
+        device = dev,
         recordingMethod = Metadata.RECORDING_METHOD_AUTOMATICALLY_RECORDED,
     )
 
@@ -276,17 +283,32 @@ class RecordMapper(
 
     // ---------------- 体重（体脂秤） ----------------
 
-    fun body(items: List<MiItem>): List<Record> {
+    /**
+     * 称重 → 体重 / 体脂率 / 体内水分 / 骨量 / 去脂体重 / 基础代谢。
+     * ID 只按称重时刻生成，同一次称重无论来自米家还是小米运动健康都只写一份。
+     */
+    fun weighIns(list: List<ScaleWeighIn>): List<Record> {
         val out = ArrayList<Record>()
-        for (item in items) {
-            val t = item.time ?: continue
-            val off = offsetOf(item)
-            val w = item.value.optDoubleOrNull("weight") ?: continue
-            if (w <= 0 || w > 1000) continue
-            out += WeightRecord(time = instant(t), zoneOffset = off, weight = Mass.kilograms(w), metadata = meta("mi_weight_$t"))
-            val fat = item.value.optDoubleOrNull("body_fat_rate")
-            if (fat != null && fat > 0 && fat <= 100) {
-                out += BodyFatRecord(time = instant(t), zoneOffset = off, percentage = Percentage(fat), metadata = meta("mi_bodyfat_$t"))
+        for (w in list.distinctBy { it.timeSec }) {
+            val t = w.timeSec
+            val at = instant(t)
+            val off = defaultOffset
+            out += WeightRecord(time = at, zoneOffset = off, weight = Mass.kilograms(w.weightKg), metadata = meta("mi_weight_$t", scaleDevice))
+            w.bodyFatPct?.takeIf { it <= 100 }?.let {
+                out += BodyFatRecord(time = at, zoneOffset = off, percentage = Percentage(it), metadata = meta("mi_bodyfat_$t", scaleDevice))
+            }
+            val waterKg = w.bodyWaterKg ?: w.bodyWaterPct?.takeIf { it <= 100 }?.let { w.weightKg * it / 100 }
+            waterKg?.takeIf { it < w.weightKg }?.let {
+                out += BodyWaterMassRecord(time = at, zoneOffset = off, mass = Mass.kilograms(it), metadata = meta("mi_bodywater_$t", scaleDevice))
+            }
+            w.boneMassKg?.takeIf { it < w.weightKg }?.let {
+                out += BoneMassRecord(time = at, zoneOffset = off, mass = Mass.kilograms(it), metadata = meta("mi_bone_$t", scaleDevice))
+            }
+            w.leanMassKg?.takeIf { it < w.weightKg }?.let {
+                out += LeanBodyMassRecord(time = at, zoneOffset = off, mass = Mass.kilograms(it), metadata = meta("mi_lean_$t", scaleDevice))
+            }
+            w.bmrKcal?.takeIf { it < 10_000 }?.let {
+                out += BasalMetabolicRateRecord(time = at, zoneOffset = off, basalMetabolicRate = Power.kilocaloriesPerDay(it), metadata = meta("mi_bmr_$t", scaleDevice))
             }
         }
         return out

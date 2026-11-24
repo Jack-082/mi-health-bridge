@@ -4,10 +4,14 @@ import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
 import androidx.health.connect.client.records.BodyFatRecord
+import androidx.health.connect.client.records.BodyWaterMassRecord
+import androidx.health.connect.client.records.BoneMassRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.LeanBodyMassRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RespiratoryRateRecord
@@ -19,12 +23,15 @@ import io.github.mihealthbridge.hc.HealthConnectWriter
 import io.github.mihealthbridge.hc.RecordMapper
 import io.github.mihealthbridge.mi.MiAuthException
 import io.github.mihealthbridge.mi.MiCloudClient
+import io.github.mihealthbridge.mi.MiScaleParser
 import io.github.mihealthbridge.mi.MiSession
+import io.github.mihealthbridge.mi.ScaleWeighIn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.reflect.KClass
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.ZoneId
@@ -118,7 +125,7 @@ class SyncEngine(private val context: Context) {
 
     private fun label(type: KClass<out Record>) = HealthConnectWriter.LABELS[type] ?: type.simpleName.orEmpty()
 
-    /** 按 11 类数据汇总：未授权 > 拉取失败 > 写入结果 > 无数据。 */
+    /** 按各类数据汇总：未授权 > 拉取失败 > 写入结果 > 无数据。 */
     private fun buildReport(
         nowMs: Long, startSec: Long, endSec: Long,
         fetchErrors: Map<KClass<out Record>, String>,
@@ -206,8 +213,61 @@ class SyncEngine(private val context: Context) {
             records
         }
         step("运动", listOf(ExerciseSessionRecord::class)) { mapper.workouts(cloud.fetchSportRecords(s, start - 86_400, end)) }
-        step("体重", listOf(WeightRecord::class, BodyFatRecord::class)) { mapper.body(cloud.fetchData(s, "weight", start, end)) }
+        val bodyTypes = listOf(
+            WeightRecord::class, BodyFatRecord::class, BodyWaterMassRecord::class,
+            BoneMassRecord::class, LeanBodyMassRecord::class, BasalMetabolicRateRecord::class,
+        )
+        step("体重（小米运动健康）", bodyTypes) {
+            mapper.weighIns(cloud.fetchData(s, "weight", start, end).mapNotNull(MiScaleParser::fromFitnessItem))
+        }
+        if (settings.scaleEnabled) {
+            step("米家体脂秤", bodyTypes) { mapper.weighIns(fetchMijiaScale(s, start)) }
+        }
         return Fetched(out, replace, fetchErrors)
+    }
+
+    /**
+     * 米家 App 绑定的体脂秤。型号未知时按候选列表自动探测（只看第一页）。
+     * 秤上有多位家庭成员且未选择本人时抛错：不写入，也不推进同步窗口，选好成员后下次同步会补上。
+     */
+    private fun fetchMijiaScale(s: MiSession, startSec: Long): List<ScaleWeighIn> {
+        var model = settings.scaleModel
+        if (model.isEmpty()) {
+            val now = System.currentTimeMillis()
+            if (now - settings.scaleProbeAt < 6 * 3_600_000L) {
+                throw IOException("尚未找到米家体脂秤，6 小时内不再重复探测")
+            }
+            settings.scaleProbeAt = now
+            for (m in MiScaleParser.CANDIDATE_MODELS) {
+                val found = try {
+                    cloud.fetchScaleData(s, m, Long.MAX_VALUE)
+                } catch (e: MiAuthException) {
+                    throw e
+                } catch (e: Exception) {
+                    log("探测体脂秤型号 $m：${e.message ?: e.javaClass.simpleName}")
+                    emptyList()
+                }
+                if (found.isNotEmpty()) { model = m; break }
+            }
+            if (model.isEmpty()) {
+                throw IOException("没有找到米家体脂秤数据：请确认秤已绑定在米家 App，且至少称过一次")
+            }
+            settings.scaleModel = model
+            log("米家体脂秤型号：$model")
+        }
+
+        val sinceMs = startSec * 1000
+        val all = cloud.fetchScaleData(s, model, sinceMs)
+        val members = (settings.scaleMembersSeen + all.mapNotNull { it.member }).distinct()
+        settings.scaleMembersSeen = members
+        val inWindow = all.filter { it.timeSec * 1000 >= sinceMs }
+
+        val chosen = settings.scaleMember
+        return when {
+            chosen.isNotEmpty() -> inWindow.filter { it.member == chosen }
+            members.size <= 1 -> inWindow
+            else -> throw IOException("秤上有 ${members.size} 位成员（${members.joinToString("、")}），请在「米家体脂秤」中选择你自己")
+        }
     }
 
     private fun describe(o: SyncOutcome): String = when (o) {
