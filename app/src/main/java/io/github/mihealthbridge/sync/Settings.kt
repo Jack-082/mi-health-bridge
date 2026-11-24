@@ -66,5 +66,14 @@ class Settings(context: Context) {
 
     val log: String get() = prefs.getString("log", "") ?: ""
 
-    fun resetSyncState() = prefs.edit().remove("lastSuccess").apply()
+    /** 记录已输出过的睡眠诊断签名；返回 true 表示是新内容，需要写日志。 */
+    fun markSleepDiagSeen(signature: String): Boolean {
+        val seen = (prefs.getString("sleepDiag", "") ?: "").split('\n').filter { it.isNotEmpty() }
+        if (signature in seen) return false
+        prefs.edit().putString("sleepDiag", (seen + signature).takeLast(120).joinToString("\n")).apply()
+        return true
+    }
+
+    /** 全量重同步：重置同步窗口，并重新输出睡眠诊断。 */
+    fun resetSyncState() = prefs.edit().remove("lastSuccess").remove("sleepDiag").apply()
 }

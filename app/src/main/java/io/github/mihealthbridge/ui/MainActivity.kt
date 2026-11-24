@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings as AndroidSettings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -35,6 +36,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -152,6 +155,7 @@ class MainActivity : ComponentActivity() {
         val tick = refreshTick
         val s = remember(tick) { snapshot() }
         val totalPerms = HealthConnectWriter.PERMISSIONS.size
+        val clipboard = LocalClipboardManager.current
 
         val accountStatus = when {
             !s.loggedIn -> Status.None
@@ -255,6 +259,10 @@ class MainActivity : ComponentActivity() {
             HorizontalDivider(thickness = 0.5.dp, color = Palette.Rule)
 
             Panel("d", "日志") {
+                SecondaryButton("复制全部日志", Modifier.fillMaxWidth()) {
+                    clipboard.setText(AnnotatedString(s.log))
+                    Toast.makeText(this@MainActivity, "已复制 ${s.log.lines().count { it.isNotBlank() }} 行日志", Toast.LENGTH_SHORT).show()
+                }
                 Box(Modifier.fillMaxWidth().background(Palette.Tint).padding(12.dp)) {
                     Text(
                         s.log.lines().takeLast(60).reversed().joinToString("\n").ifEmpty { "暂无" },

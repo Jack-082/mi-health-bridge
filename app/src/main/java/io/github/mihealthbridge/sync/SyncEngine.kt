@@ -3,6 +3,8 @@ package io.github.mihealthbridge.sync
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.records.Record
+import androidx.health.connect.client.records.RespiratoryRateRecord
+import androidx.health.connect.client.records.SleepSessionRecord
 import io.github.mihealthbridge.hc.HealthConnectWriter
 import io.github.mihealthbridge.hc.RecordMapper
 import io.github.mihealthbridge.mi.MiAuthException
@@ -66,7 +68,7 @@ class SyncEngine(private val context: Context) {
             .atStartOfDay(zone).toEpochSecond()
         val endSec = nowSec + 3600
 
-        val (records, failures) = try {
+        val (records, replace, failures) = try {
             fetchAll(sessionOrLogin(), startSec, endSec, nowMs)
         } catch (e: MiAuthException) {
             // 会话过期：用 passToken 重新换一次会话再试
@@ -80,7 +82,7 @@ class SyncEngine(private val context: Context) {
             }
         }
 
-        val written = HealthConnectWriter(context).write(records) { log(it) }
+        val written = HealthConnectWriter(context).write(records, replace) { log(it) }
         settings.needsRelogin = false
         // 有数据项拉取失败时不推进窗口，下次会重拉（重复写入由 clientRecordId 去重）
         if (failures == 0) settings.lastSuccessMillis = nowMs else log("$failures 项拉取失败，保留同步窗口")
@@ -96,9 +98,12 @@ class SyncEngine(private val context: Context) {
         return session
     }
 
-    private fun fetchAll(s: MiSession, start: Long, end: Long, nowMs: Long): Pair<List<Record>, Int> {
+    private data class Fetched(val records: List<Record>, val replace: List<HealthConnectWriter.Replace>, val failures: Int)
+
+    private fun fetchAll(s: MiSession, start: Long, end: Long, nowMs: Long): Fetched {
         val mapper = RecordMapper(nowMillis = nowMs)
         val out = ArrayList<Record>()
+        val replace = ArrayList<HealthConnectWriter.Replace>()
         var failures = 0
         fun step(name: String, block: () -> List<Record>) {
             try {
@@ -118,11 +123,28 @@ class SyncEngine(private val context: Context) {
         step("心率") { mapper.heartRate(cloud.fetchData(s, "heart_rate", start, end)) }
         step("静息心率") { mapper.restingHeartRate(cloud.fetchData(s, "resting_heart_rate", start, end)) }
         step("血氧") { mapper.spo2(cloud.fetchData(s, "spo2", start, end)) }
-        // 睡眠记录的时间戳通常在醒来时，多回看一天
-        step("睡眠") { mapper.sleep(cloud.fetchData(s, "sleep", start - 86_400, end)) }
+        step("睡眠") {
+            // 前一晚的入睡时间通常早于 start（当天零点），因此清理从前一天开始；
+            // 拉取再多回看一天，保证清理范围内的每一晚都能重新拉到，不会误删。
+            val replaceFrom = start - 86_400
+            val items = cloud.fetchData(s, "sleep", replaceFrom - 86_400, end)
+            for ((sig, line) in mapper.sleepDiagnostics(items)) {
+                if (settings.markSleepDiagSeen(sig)) log(line)
+            }
+            val records = mapper.sleep(items) { if (settings.markSleepDiagSeen(it)) log(it) }
+            // 同一晚的记录 ID 可能随云端更新而变化，旧记录会残留成重复睡眠。
+            // 拉取成功且有数据时，先清空本应用在清理范围内写过的睡眠/呼吸记录再重写。
+            if (records.any { it is SleepSessionRecord }) {
+                val from = Instant.ofEpochSecond(replaceFrom)
+                val to = Instant.ofEpochSecond(end)
+                replace += HealthConnectWriter.Replace(SleepSessionRecord::class, from, to)
+                replace += HealthConnectWriter.Replace(RespiratoryRateRecord::class, from, to)
+            }
+            records
+        }
         step("运动") { mapper.workouts(cloud.fetchSportRecords(s, start - 86_400, end)) }
         step("体重") { mapper.body(cloud.fetchData(s, "weight", start, end)) }
-        return out to failures
+        return Fetched(out, replace, failures)
     }
 
     private fun describe(o: SyncOutcome): String = when (o) {

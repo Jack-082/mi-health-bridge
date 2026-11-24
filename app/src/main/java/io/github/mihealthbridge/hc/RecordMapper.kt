@@ -25,6 +25,7 @@ import io.github.mihealthbridge.mi.optLongOrNull
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 /**
  * 把小米云端条目映射为 Health Connect 记录。
@@ -142,14 +143,41 @@ class RecordMapper(
 
     // ---------------- 睡眠 ----------------
 
-    /** 返回睡眠记录 + 睡眠期间平均呼吸频率。 */
-    fun sleep(items: List<MiItem>): List<Record> {
+    private class SleepCandidate(val item: MiItem, val startSec: Long, val endSec: Long)
+
+    private fun sleepBounds(item: MiItem): SleepCandidate? {
+        val v = item.value
+        val startSec = v.firstLong("bedtime", "device_bedtime", "bed_timestamp") ?: return null
+        val endSec = v.firstLong("wake_up_time", "device_wake_up_time", "out_bed_timestamp") ?: item.time ?: return null
+        return if (endSec > startSec) SleepCandidate(item, startSec, endSec) else null
+    }
+
+    /**
+     * 返回睡眠记录 + 睡眠期间平均呼吸频率。
+     *
+     * 云端同一晚可能返回多条互相重叠的条目（例如未睡完时上传的半截记录和完整记录），
+     * 重叠时只保留 time 较新的一条（相同则保留时长较长的），并通过 [log] 记录下来。
+     */
+    fun sleep(items: List<MiItem>, log: (String) -> Unit = {}): List<Record> {
+        val kept = ArrayList<SleepCandidate>()
+        for (c in items.mapNotNull { sleepBounds(it) }.sortedBy { it.startSec }) {
+            val prev = kept.lastOrNull()
+            if (prev == null || c.startSec >= prev.endSec) {
+                kept += c
+                continue
+            }
+            val cNewer = compareValuesBy(c, prev, { it.item.time ?: 0L }, { it.endSec - it.startSec }) >= 0
+            val (win, lose) = if (cNewer) c to prev else prev to c
+            log("睡眠去重：${span(lose)} 与 ${span(win)} 重叠，保留 time=${win.item.time}，丢弃 time=${lose.item.time}")
+            kept[kept.lastIndex] = win
+        }
+
         val out = ArrayList<Record>()
-        for (item in items) {
+        for (c in kept) {
+            val item = c.item
             val v = item.value
-            val startSec = v.firstLong("bedtime", "device_bedtime", "bed_timestamp") ?: continue
-            val endSec = v.firstLong("wake_up_time", "device_wake_up_time", "out_bed_timestamp") ?: item.time ?: continue
-            if (endSec <= startSec) continue
+            val startSec = c.startSec
+            val endSec = c.endSec
             val off = offsetOf(item)
             val start = instant(startSec)
             val end = instant(endSec)
@@ -175,11 +203,12 @@ class RecordMapper(
             }
 
             val isNap = v.optBoolean("is_nap", false)
+            val score = v.optLongOrNull("score") ?: v.optLongOrNull("sleep_score")
             out += SleepSessionRecord(
                 startTime = start, startZoneOffset = off,
                 endTime = end, endZoneOffset = off,
                 title = if (isNap) "小睡" else "睡眠",
-                notes = v.optLongOrNull("score")?.let { "小米睡眠评分 $it" },
+                notes = score?.let { "小米睡眠评分 $it" },
                 stages = clean,
                 metadata = meta("mi_sleep_$sleepId"),
             )
@@ -191,6 +220,50 @@ class RecordMapper(
         }
         return out
     }
+
+    /**
+     * 每条云端睡眠条目的诊断信息：(签名, 日志行)。签名不变说明内容没变，调用方据此避免重复输出。
+     * 用于核对：分期编号 → 分钟数 是否与云端 sleep_*_duration 一致，以及同一晚是否出现多条。
+     */
+    fun sleepDiagnostics(items: List<MiItem>): List<Pair<String, String>> = items.map { item ->
+        val v = item.value
+        val bed = v.firstLong("bedtime", "device_bedtime", "bed_timestamp")
+        val wake = v.firstLong("wake_up_time", "device_wake_up_time", "out_bed_timestamp")
+        val perState = sortedMapOf<Long, Long>()
+        v.optJSONArray("items")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val seg = arr.optJSONObject(i) ?: continue
+                val s = seg.optLongOrNull("start_time") ?: continue
+                val e = seg.optLongOrNull("end_time") ?: continue
+                if (e <= s) continue
+                val state = seg.optLongOrNull("state") ?: -1L
+                perState[state] = (perState[state] ?: 0L) + (e - s)
+            }
+        }
+        val top = DIAG_FIELDS.mapNotNull { k -> v.optLongOrNull(k)?.let { "$k=$it" } }
+        val stageText = perState.entries.joinToString(" ") { "s${it.key}=${it.value / 60}" }
+        val off = offsetOf(item)
+        val line = buildString {
+            append("睡眠诊断 ").append(fmt(bed, off)).append(" → ").append(fmt(wake, off))
+            if (bed != null && wake != null) append("（").append((wake - bed) / 60).append(" 分钟）")
+            append(" | 云端: ").append(top.joinToString(" ").ifEmpty { "无时长字段" })
+            append(" | 分期合计(分钟): ").append(stageText.ifEmpty { "无分期" })
+            append(" | sid=").append(item.sid).append(" time=").append(item.time)
+            append(" tz=").append(item.zoneOffsetSec)
+            append(" nap=").append(v.opt("is_nap"))
+            append(" | 字段: ").append(v.keys().asSequence().sorted().joinToString(","))
+        }
+        val sig = listOf(item.sid, item.time, bed, wake, top, stageText).joinToString("|")
+        sig to line
+    }
+
+    private fun span(c: SleepCandidate): String {
+        val off = offsetOf(c.item)
+        return "${fmt(c.startSec, off)}→${fmt(c.endSec, off)}"
+    }
+
+    private fun fmt(sec: Long?, off: ZoneOffset): String =
+        sec?.let { instant(it).atOffset(off).format(DIAG_TIME) } ?: "?"
 
     /** 小米分期编码（HealthMi 实测）：2 深睡，3 浅睡，4 REM，5 清醒。 */
     private fun sleepStage(state: Long?): Int = when (state) {
@@ -246,6 +319,12 @@ class RecordMapper(
     }
 
     companion object {
+        private val DIAG_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+        private val DIAG_FIELDS = listOf(
+            "duration", "sleep_deep_duration", "sleep_light_duration", "sleep_rem_duration",
+            "sleep_awake_duration", "awake_duration", "score", "sleep_score",
+        )
+
         fun exerciseType(raw: String): Int {
             val t = raw.lowercase()
             fun has(vararg k: String) = k.any { t.contains(it) }

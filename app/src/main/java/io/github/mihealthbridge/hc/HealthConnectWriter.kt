@@ -16,6 +16,8 @@ import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.WeightRecord
+import androidx.health.connect.client.time.TimeRangeFilter
+import java.time.Instant
 import kotlin.reflect.KClass
 
 class HealthConnectWriter(context: Context) {
@@ -24,13 +26,25 @@ class HealthConnectWriter(context: Context) {
 
     suspend fun grantedPermissions(): Set<String> = client.permissionController.getGrantedPermissions()
 
+    /** 写入前先删除本应用在 [start, end) 内写过的 [type] 记录（Health Connect 只删除调用方自己的数据）。 */
+    data class Replace(val type: KClass<out Record>, val start: Instant, val end: Instant)
+
     /**
      * 写入记录：只写已授权的类型；整批失败时退回逐条写入，避免一条脏数据拖垮整批。
+     * [replace] 中的时间段会先清空再写入，用于清理 ID 变化后残留的旧记录。
      * @return 成功写入（或更新）的条数
      */
-    suspend fun write(records: List<Record>, log: (String) -> Unit): Int {
-        if (records.isEmpty()) return 0
+    suspend fun write(records: List<Record>, replace: List<Replace> = emptyList(), log: (String) -> Unit): Int {
         val granted = grantedPermissions()
+        for (r in replace) {
+            if (HealthPermission.getWritePermission(r.type) !in granted) continue
+            try {
+                client.deleteRecords(r.type, TimeRangeFilter.between(r.start, r.end))
+            } catch (e: Exception) {
+                log("清理旧 ${r.type.simpleName} 失败：${e.message}")
+            }
+        }
+        if (records.isEmpty()) return 0
         val allowed = records.filter { HealthPermission.getWritePermission(it::class) in granted }
         val skipped = records.size - allowed.size
         if (skipped > 0) log("跳过 $skipped 条未授权类型的记录")
