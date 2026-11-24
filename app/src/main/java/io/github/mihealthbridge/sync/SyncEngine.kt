@@ -161,6 +161,27 @@ class SyncEngine(private val context: Context) {
         },
     )
 
+    /** 导出用：拉取最近 [days] 天的数据并映射成记录（不写 Health Connect、不推进同步窗口）。 */
+    class ExportData(val records: List<Record>, val startSec: Long, val errors: List<String>)
+
+    suspend fun collectForExport(days: Int): ExportData = lock.withLock {
+        withContext(Dispatchers.IO) {
+            if (!settings.isLoggedIn) throw IllegalStateException("未登录小米账号")
+            val nowMs = System.currentTimeMillis()
+            val zone = ZoneId.systemDefault()
+            val startSec = Instant.ofEpochSecond(nowMs / 1000 - days * 86_400L).atZone(zone).toLocalDate()
+                .atStartOfDay(zone).toEpochSecond()
+            val endSec = nowMs / 1000 + 3600
+            val f = try {
+                fetchAll(sessionOrLogin(), startSec, endSec, nowMs)
+            } catch (e: MiAuthException) {
+                settings.session = null
+                fetchAll(sessionOrLogin(), startSec, endSec, nowMs)
+            }
+            ExportData(f.records, startSec, f.fetchErrors.map { (t, msg) -> "${label(t)}：$msg" }.distinct())
+        }
+    }
+
     private fun sessionOrLogin(): MiSession {
         settings.session?.let { return it }
         val session = cloud.login(settings.userId!!, settings.passToken!!)
@@ -254,7 +275,7 @@ class SyncEngine(private val context: Context) {
      * 秤上有多位家庭成员且未选择本人时抛错：不写入，也不推进同步窗口，选好成员后下次同步会补上。
      */
     private fun fetchMijiaScale(s: MiSession, startSec: Long): List<ScaleWeighIn> {
-        val probe = MiHomeProbe(context)
+        val probe = MiHomeCloud(context)
         var homeSession: MiSession? = null
         // 米家云的认证错误只影响体脂秤这一项，转成普通错误，避免把整个账号标记为需要重新登录
         fun home(): MiSession = homeSession ?: try {

@@ -31,11 +31,6 @@ class Settings(context: Context) {
         get() = secure.getString("session", null)?.let { MiSession.fromJson(it) }
         set(v) = secure.edit().putString("session", v?.toJson()).apply()
 
-    /** 米家体脂秤的 MiBeacon 广播密钥（hex），蓝牙诊断时从云端获取。 */
-    var scaleBeaconKey: String?
-        get() = secure.getString("scaleBeaconKey", null)
-        set(v) = secure.edit().putString("scaleBeaconKey", v).apply()
-
     var scaleMac: String?
         get() = secure.getString("scaleMac", null)
         set(v) = secure.edit().putString("scaleMac", v).apply()
@@ -121,6 +116,15 @@ class Settings(context: Context) {
     var scaleBleLastAt: Long
         get() = prefs.getLong("scaleBleLastAt", 0L)
         set(v) = prefs.edit().putLong("scaleBleLastAt", v).apply()
+
+    /** 蓝牙称重历史（每行：秒级时间戳,公斤,原始值,单位,阻抗），最多保留 1000 条，供导出。 */
+    fun appendScaleBleHistory(line: String) {
+        val lines = (prefs.getString("scaleBleHistory", "") ?: "").lines().filter { it.isNotBlank() }
+        prefs.edit().putString("scaleBleHistory", (lines + line).takeLast(1000).joinToString("\n")).apply()
+    }
+
+    val scaleBleHistory: List<String>
+        get() = (prefs.getString("scaleBleHistory", "") ?: "").lines().filter { it.isNotBlank() }
 
     var scaleBleLastResult: String
         get() = prefs.getString("scaleBleLastResult", "") ?: ""

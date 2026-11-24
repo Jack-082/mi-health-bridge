@@ -137,16 +137,6 @@ class MiCloudClient(
         }
     }
 
-    /** 米家云另一个称重接口（海外区 S400 用它；第三方秤可能也走这里）。 */
-    fun fetchCommonScalePage(session: MiSession, model: String, beginMs: Long, did: String): JSONArray {
-        val data = JSONObject()
-            .put("endTime", 1).put("beginTime", beginMs).put("model", model)
-            .put("uid", session.userId).put("did", did).put("accountId", 0)
-            .toString()
-        return request(session, ECO_COMMON_SCALE_PATH, data, mapOf("MIOT-REQUEST-MODEL" to model))
-            .optJSONArray("list") ?: JSONArray()
-    }
-
     /** eco 代理的结果是 {"resp": "<JSON 字符串>"}，里面再包一层 {code, message, result}。 */
     private fun ecoProxyArray(result: JSONObject): JSONArray {
         val resp = result.optString("resp").ifEmpty { throw MiApiException(-1, "eco 代理响应缺少 resp") }
@@ -241,7 +231,6 @@ class MiCloudClient(
         private const val SPORT_PATH = "/app/v1/data/get_sport_records_by_time"
         private const val ECO_PROXY_PATH = "/app/v1/eco/api_proxy"
         private const val ECO_SCALE_PATH = "/eco/scale/getData"
-        private const val ECO_COMMON_SCALE_PATH = "/eco/common/scale/getUserDataByPage"
         private const val SCALE_PAGE_SIZE = 20
         private const val MAX_PAGES = 200
         private const val AUTH_ERROR_CODE = 70016

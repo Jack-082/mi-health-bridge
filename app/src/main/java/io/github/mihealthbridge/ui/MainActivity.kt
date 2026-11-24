@@ -59,10 +59,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkQuery
 import io.github.mihealthbridge.hc.HealthConnectWriter
-import io.github.mihealthbridge.sync.BleAuthProbe
-import io.github.mihealthbridge.sync.BleGattProbe
-import io.github.mihealthbridge.sync.BleScaleProbe
-import io.github.mihealthbridge.sync.MiHomeProbe
+import io.github.mihealthbridge.sync.DataExporter
 import io.github.mihealthbridge.sync.ScaleBleSync
 import io.github.mihealthbridge.sync.ScaleSetup
 import io.github.mihealthbridge.sync.Settings
@@ -116,13 +113,18 @@ class MainActivity : ComponentActivity() {
     private var batteryIgnored by mutableStateOf(false)
     private var logExpanded by mutableStateOf(false)
     private var reportExpanded by mutableStateOf(false)
-    private var scaleDiagExpanded by mutableStateOf(false)
+    private var exporting by mutableStateOf(false)
+
+    /** 导出：先让用户选择保存位置（系统文件选择器，无需存储权限）。 */
+    private val exportLauncher =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+            if (uri != null) runExport(uri)
+        }
     /** 体脂秤检测进行中时的阶段提示；null = 未在检测。 */
     private var detectPhase by mutableStateOf<String?>(null)
     /** 申请蓝牙权限后无论是否授予都要继续的操作（检测时云端部分不依赖蓝牙）。 */
     private var pendingAfterPermission: (() -> Unit)? = null
     private var showDisclaimer by mutableStateOf(false)
-    private var diagnosing by mutableStateOf(false)
     private var bleProbing by mutableStateOf(false)
     private var pendingBleAction: (() -> Unit)? = null
 
@@ -134,7 +136,7 @@ class MainActivity : ComponentActivity() {
     private val blePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
             if (granted.values.all { it }) pendingBleAction?.invoke()
-            else if (pendingBleAction != null) toast("没有蓝牙权限，无法诊断")
+            else if (pendingBleAction != null) toast("没有蓝牙权限")
             pendingBleAction = null
             pendingAfterPermission?.invoke()
             pendingAfterPermission = null
@@ -228,7 +230,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun bleProbe() = withBlePermission { startBleProbe() }
+    private fun startExport() {
+        if (exporting) return
+        val day = SimpleDateFormat("yyyyMMdd", Locale.CHINA).format(Date())
+        exportLauncher.launch("MiHealthBridge-$day-${settings.initialDays}d.csv")
+    }
+
+    private fun runExport(uri: android.net.Uri) {
+        exporting = true
+        val days = settings.initialDays
+        toast("正在导出最近 $days 天的数据…")
+        lifecycleScope.launch(Dispatchers.IO) {
+            val r = runCatching { DataExporter.export(applicationContext, uri, days) }
+            launch(Dispatchers.Main) {
+                exporting = false
+                r.onSuccess {
+                    toast("已导出 ${it.rows} 行" + if (it.errors.isNotEmpty()) "（${it.errors.size} 类拉取失败，详见日志）" else "")
+                    if (it.errors.isNotEmpty()) {
+                        val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
+                        it.errors.forEach { e -> settings.appendLog("${fmt.format(Date())}  [导出] $e") }
+                    }
+                }.onFailure { toast("导出失败：${it.message}") }
+                refresh()
+            }
+        }
+    }
 
     /** 开启/关闭蓝牙直连体脂秤。 */
     private fun setScaleBle(on: Boolean) {
@@ -260,80 +286,6 @@ class MainActivity : ComponentActivity() {
                     })
                     refresh()
                 }
-            }
-        }
-    }
-
-    /** 米家蓝牙认证诊断：登录后记录秤推送的加密数据并查询属性。 */
-    private fun bleAuthProbe() = withBlePermission {
-        bleProbing = true
-        toast("请现在站上秤，一直站到读数稳定")
-        lifecycleScope.launch(Dispatchers.IO) {
-            val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
-            val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  $it") }
-            runCatching { BleAuthProbe(applicationContext).probe(log) }
-                .onFailure { log("米家蓝牙认证诊断失败：${it.javaClass.simpleName} ${it.message}") }
-            launch(Dispatchers.Main) {
-                bleProbing = false
-                logExpanded = true
-                toast("认证诊断完成，结果在「详细日志」里")
-                refresh()
-            }
-        }
-    }
-
-    /** 蓝牙连接诊断：等秤醒来后连接，记录服务/特征与称重时的通知。 */
-    private fun bleGattProbe() = withBlePermission {
-        bleProbing = true
-        toast("请先确认已强制停止米家 App，然后站上秤")
-        lifecycleScope.launch(Dispatchers.IO) {
-            val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
-            val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  $it") }
-            runCatching { BleGattProbe(applicationContext).probe(log) }
-                .onFailure { log("蓝牙连接诊断失败：${it.javaClass.simpleName} ${it.message}") }
-            launch(Dispatchers.Main) {
-                bleProbing = false
-                logExpanded = true
-                toast("蓝牙连接诊断完成，结果在「详细日志」里")
-                refresh()
-            }
-        }
-    }
-
-    /** 蓝牙诊断：监听 60 秒体脂秤广播，结果写进详细日志。 */
-    private fun startBleProbe() {
-        bleProbing = true
-        toast("蓝牙诊断开始：请在 60 秒内站上秤称一次")
-        lifecycleScope.launch(Dispatchers.IO) {
-            val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
-            val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  $it") }
-            runCatching { BleScaleProbe(applicationContext).run(60, log) }
-                .onFailure { log("蓝牙诊断失败：${it.javaClass.simpleName} ${it.message}") }
-            launch(Dispatchers.Main) {
-                bleProbing = false
-                logExpanded = true
-                toast("蓝牙诊断完成，结果在「详细日志」里")
-                refresh()
-            }
-        }
-    }
-
-    /** 诊断米家体脂秤：结果写进详细日志，供用户复制反馈。 */
-    private fun diagnoseScale() {
-        if (diagnosing) return
-        diagnosing = true
-        toast("正在诊断米家体脂秤…")
-        lifecycleScope.launch(Dispatchers.IO) {
-            val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
-            val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  $it") }
-            runCatching { MiHomeProbe(applicationContext).diagnose(log) }
-                .onSuccess { model -> if (model != null) settings.scaleModel = model }
-                .onFailure { log("诊断失败：${it.javaClass.simpleName} ${it.message}") }
-            launch(Dispatchers.Main) {
-                diagnosing = false
-                logExpanded = true
-                toast("诊断完成，结果在「详细日志」里")
-                refresh()
             }
         }
     }
@@ -514,6 +466,11 @@ class MainActivity : ComponentActivity() {
                     selected = s.initialDays,
                 ) { d -> settings.initialDays = d; refresh() }
                 Caption("全量重同步会重新拉取这段时间的数据，覆盖 Health Connect 中本应用写入的记录。")
+                SecondaryButton(
+                    if (exporting) "导出中…" else "导出数据（CSV，最近 ${s.initialDays} 天）",
+                    Modifier.fillMaxWidth(), enabled = !exporting && s.loggedIn,
+                ) { startExport() }
+                Caption("导出步数、心率、睡眠、血氧、运动、体重等记录为 CSV（可用 Excel 打开），天数与上面的「回溯天数」一致。")
                 if (!batteryIgnored) {
                     SecondaryButton("关闭电池优化（后台同步更及时）", Modifier.fillMaxWidth()) { requestIgnoreBattery() }
                 }
@@ -669,25 +626,11 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                if (kind == ScaleSetup.Kind.UNSUPPORTED) Caption("这台秤暂不支持。可展开下方「诊断工具」收集数据后反馈给开发者。", Palette.Red)
+                if (kind == ScaleSetup.Kind.UNSUPPORTED) Caption("这台秤暂不支持。可以把「详细日志」里的检测结果反馈给开发者。", Palette.Red)
                 if (kind == ScaleSetup.Kind.NONE) Caption("米家账号里没有找到体脂秤。绑定在小米运动健康的秤，体重会随「同步」自动写入。")
                 SecondaryButton("重新检测", Modifier.fillMaxWidth(), enabled = phase == null && s.loggedIn) { detectScale() }
             }
 
-            ExpandableHeader(
-                title = "诊断工具",
-                summary = "适配新型号时使用",
-                expanded = scaleDiagExpanded,
-                onToggle = { scaleDiagExpanded = !scaleDiagExpanded },
-            )
-            if (scaleDiagExpanded) {
-                Caption("诊断会主动连接秤，请先在上方停用体脂秤同步，避免抢连接。结果写进「详细日志」。")
-                val busy = bleProbing || diagnosing || phase != null
-                SecondaryButton(if (diagnosing) "诊断中…" else "云端诊断（查找秤并检查云端数据）", Modifier.fillMaxWidth(), enabled = !busy && s.loggedIn) { diagnoseScale() }
-                SecondaryButton("蓝牙广播诊断（60 秒内称一次重）", Modifier.fillMaxWidth(), enabled = !busy && s.loggedIn) { bleProbe() }
-                SecondaryButton("蓝牙连接诊断（不认证）", Modifier.fillMaxWidth(), enabled = !busy && s.loggedIn) { bleGattProbe() }
-                SecondaryButton("米家蓝牙认证诊断（点后立即站上秤）", Modifier.fillMaxWidth(), enabled = !busy && s.loggedIn) { bleAuthProbe() }
-            }
         }
     }
 

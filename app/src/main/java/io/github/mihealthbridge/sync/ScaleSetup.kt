@@ -52,7 +52,7 @@ object ScaleSetup {
 
         // 1) 米家账号里的秤
         phase("正在读取米家设备列表…")
-        val cloud = MiHomeProbe(context)
+        val cloud = MiHomeCloud(context)
         val hs = cloud.login()
         val scales = cloud.scales(cloud.listDevices(hs))
         scales.forEach { log("米家里的秤：${it.name} | ${it.model} | MAC=${it.mac}") }
@@ -116,7 +116,7 @@ object ScaleSetup {
             else -> {
                 s.scaleEnabled = false
                 s.scaleBleEnabled = false
-                log("这台秤暂不支持。可展开「诊断工具」收集数据后反馈给开发者。")
+                log("这台秤暂不支持。")
             }
         }
         log("—— 体脂秤检测结束 ——")

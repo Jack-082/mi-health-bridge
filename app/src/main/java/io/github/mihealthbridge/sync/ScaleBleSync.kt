@@ -104,7 +104,7 @@ object ScaleBleSync {
     fun ensureCredentials(context: Context, forceRefresh: Boolean = false): Boolean {
         val s = Settings(context)
         if (!forceRefresh && !s.scaleMac.isNullOrEmpty() && s.scaleToken?.length == 24) return true
-        val cloud = MiHomeProbe(context)
+        val cloud = MiHomeCloud(context)
         val scale = cloud.scales(cloud.listDevices(cloud.login())).firstOrNull { it.token?.length == 24 } ?: return false
         s.scaleMac = scale.mac
         s.scaleToken = scale.token
@@ -122,6 +122,13 @@ object ScaleBleSync {
         val token = MiBeacon.unhex(s.scaleToken!!)
 
         val readings = ArrayList<MjhScale.Reading>()
+        /** 本次收到的解密后消息，解析失败时写进日志，便于排查协议变化。 */
+        val rawMessages = ArrayList<String>()
+        fun dumpRaw(reason: String): String {
+            log(context, "$reason；本次收到 ${rawMessages.size} 条消息：")
+            rawMessages.take(40).forEach { log(context, "  $it") }
+            return reason
+        }
         val conn = MiBleConnection(context, device)
         try {
             conn.connect()
@@ -138,6 +145,7 @@ object ScaleBleSync {
             var stableAt = -1
             while (System.currentTimeMillis() - start < 30_000 && !conn.disconnected.isCompleted) {
                 val msg = conn.nextMiotMessage(3_000) ?: continue
+                rawMessages += MiBeacon.hex(msg)
                 when (msg.size) {
                     14 -> pendingFirst = msg
                     8 -> {
@@ -157,8 +165,8 @@ object ScaleBleSync {
         }
 
         val result = MjhScale.settle(readings)
-            ?: return "没有读到稳定体重（收到 ${readings.size} 帧）"
-        val kg = result.kg ?: return "未知的单位标志 ${result.unit}（原始值 ${result.raw}）"
+            ?: return dumpRaw("没有读到稳定体重（解析出 ${readings.size} 帧）")
+        val kg = result.kg ?: return dumpRaw("未知的单位标志 ${result.unit}（原始值 ${result.raw}）")
         s.scaleBleLastAt = System.currentTimeMillis()
 
         val now = Instant.now()
@@ -174,6 +182,7 @@ object ScaleBleSync {
             ),
         )
         val written = HealthConnectWriter(context).write(listOf(record)) { log(context, it) }.written
+        s.appendScaleBleHistory("${now.epochSecond},$kg,${result.raw},${result.unit},${result.impedance}")
         val summary = "%.2f kg（秤显示 %.1f%s）".format(kg, result.raw / 10.0, if (result.unit == 1) " 斤" else " kg") +
             (if (result.impedance > 0) "，阻抗 ${result.impedance} Ω" else "") +
             if (written > 0) "，已写入 Health Connect" else "，写入 Health Connect 失败（请检查体重写入权限）"
