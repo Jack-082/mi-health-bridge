@@ -118,6 +118,17 @@ class MiHomeProbe(context: Context) {
         for (d in scales) {
             log("秤：${d.name} | model=${d.model} | spec=${d.specType ?: "无"}")
 
+            // 0) 这台秤的米家插件：下载地址供开发者分析插件读取称重历史所用的接口
+            try {
+                val req = JSONObject().put("latest_req", JSONObject()
+                    .put("api_version", 10070)
+                    .put("plugins", JSONArray().put(JSONObject().put("model", d.model))))
+                val r = home.call(hs, "/v2/plugin/fetch_plugin", req.toString())
+                log("  [米家插件] ${r.toString().take(1500)}")
+            } catch (e: Exception) {
+                log("  [米家插件] 获取失败：${e.message ?: e.javaClass.simpleName}")
+            }
+
             // 1) 体脂秤专用接口：米家云直连 / 小米运动健康代理 × 不带 / 带设备 ID，外加米家通用称重接口
             val now = System.currentTimeMillis()
             val attempts: List<Pair<String, () -> JSONArray>> = listOf(
