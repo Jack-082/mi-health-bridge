@@ -31,10 +31,32 @@ jobs:
         run: gradle :app:testDebugUnitTest --no-daemon
 
       # 可选：配置 SIGNING_KEYSTORE_BASE64 等 Secrets 后使用固定签名，APK 可直接覆盖升级
+      - name: Signing status
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "::notice::已读取到 SIGNING_KEYSTORE_BASE64，将使用固定签名"
+          else
+            echo "::warning::没有读取到 SIGNING_KEYSTORE_BASE64（请确认它在 Settings → Secrets and variables → Actions 的 Repository secrets 里），本次使用 debug 签名"
+          fi
+
       - name: Decode keystore
         if: env.KEYSTORE_B64 != ''
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          missing=""
+          for v in SIGNING_STORE_PASSWORD SIGNING_KEY_ALIAS SIGNING_KEY_PASSWORD; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::缺少 Secret：$missing"
+            exit 1
+          fi
+          # 去掉粘贴时可能带进来的空格和换行
+          printf '%s' "$KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "keystore 大小：$(wc -c < "$RUNNER_TEMP/release.jks") 字节"
           echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
       - name: Assemble release APK
@@ -43,6 +65,19 @@ jobs:
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: gradle :app:assembleRelease --no-daemon
+
+      - name: Verify APK signature
+        run: |
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          for apk in app/build/outputs/apk/release/*.apk; do
+            "$apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+            digest="$(grep -m1 'SHA-256 digest' "$RUNNER_TEMP/certs.txt" | awk '{print $NF}')"
+            if grep -q 'CN=Android Debug' "$RUNNER_TEMP/certs.txt"; then
+              echo "::warning::APK 使用的是 debug 签名（每次构建都不同），安装前需要先卸载旧版本"
+            else
+              echo "::notice::APK 已使用固定签名，证书 SHA-256：$digest"
+            fi
+          done
 
       - uses: actions/upload-artifact@v4
         with:
