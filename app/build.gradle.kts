@@ -39,7 +39,7 @@ android {
                 storeFile = file(keystorePath)
                 val storePw = System.getenv("SIGNING_STORE_PASSWORD")
                 storePassword = storePw
-                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")?.takeIf { it.isNotEmpty() } ?: "mihealthbridge"
                 // PKCS12 keystore 的密钥密码与 keystore 密码相同；未单独配置时直接沿用
                 keyPassword = System.getenv("SIGNING_KEY_PASSWORD")?.takeIf { it.isNotEmpty() } ?: storePw
             }

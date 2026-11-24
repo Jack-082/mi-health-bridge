@@ -46,12 +46,12 @@ jobs:
         if: env.KEYSTORE_B64 != ''
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_ALIAS: ${{ vars.SIGNING_KEY_ALIAS || 'mihealthbridge' }} # 别名不是机密，写成 Secret 会导致日志里同名文字被遮挡
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           missing=""
           # SIGNING_KEY_PASSWORD 可选：不配置时使用 SIGNING_STORE_PASSWORD
-          for v in SIGNING_STORE_PASSWORD SIGNING_KEY_ALIAS; do
+          for v in SIGNING_STORE_PASSWORD; do
             [ -n "${!v}" ] || missing="$missing $v"
           done
           if [ -n "$missing" ]; then
@@ -60,7 +60,7 @@ jobs:
           fi
           # 去掉粘贴时可能带进来的空格和换行
           printf '%s' "$KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks"
-          echo "keystore 大小：$(wc -c < "$RUNNER_TEMP/release.jks") 字节"
+          echo "keystore 大小：$(wc -c < "$RUNNER_TEMP/release.jks") 字节，别名：$SIGNING_KEY_ALIAS"
           if [ -n "$SIGNING_KEY_PASSWORD" ] && [ "$SIGNING_KEY_PASSWORD" != "$SIGNING_STORE_PASSWORD" ]; then
             echo "::warning::SIGNING_KEY_PASSWORD 与 SIGNING_STORE_PASSWORD 不同；用 openssl 生成的 keystore 两者应相同，建议删除 SIGNING_KEY_PASSWORD"
           fi
@@ -69,7 +69,7 @@ jobs:
       - name: Assemble release APK
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_ALIAS: ${{ vars.SIGNING_KEY_ALIAS || 'mihealthbridge' }} # 别名不是机密，写成 Secret 会导致日志里同名文字被遮挡
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: gradle :app:assembleRelease --no-daemon
 
