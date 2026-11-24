@@ -99,6 +99,8 @@ base64 -i release.p12 | tr -d '\n' | pbcopy   # 复制到剪贴板
 
 （`SIGNING_KEY_PASSWORD` 可选，不配置时沿用 keystore 密码。）构建日志会注明 APK 是否已使用固定签名，以及证书的 SHA-256。
 
+**自动上传到蒲公英**（可选，方便国内用户下载）：再添加 `PGYER_API_KEY`（在 [蒲公英 API 信息页](https://www.pgyer.com/account/api) 获取），推送 `v*` 标签时会自动上传，下载页地址显示在构建摘要里。可选的 `PGYER_PASSWORD` 会给下载页设置安装密码。已发布的版本可以在 Actions 页面选择对应标签手动运行一次来补传。
+
 **本地构建**：用 Android Studio 打开项目，或执行：
 
 ```bash

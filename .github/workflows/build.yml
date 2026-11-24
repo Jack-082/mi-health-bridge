@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+      PGYER_API_KEY: ${{ secrets.PGYER_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,8 +95,82 @@ jobs:
           name: MiHealthBridge-apk
           path: app/build/outputs/apk/release/*.apk
 
+      # 只在推送标签时创建 Release；在 Actions 页面对某个标签手动运行时不重复发布
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: app/build/outputs/apk/release/*.apk
+
+      # 可选：配置 PGYER_API_KEY（和可选的 PGYER_PASSWORD）后，发布 v* 版本时自动上传到蒲公英。
+      # 也可以在 Actions 页面选择某个 v* 标签手动运行，把已有版本补传到蒲公英。
+      # 接口文档：https://www.pgyer.com/doc/view/api_upload
+      - name: Upload to Pgyer
+        if: startsWith(github.ref, 'refs/tags/v') && env.PGYER_API_KEY != ''
+        continue-on-error: true # 蒲公英出错不影响 GitHub Release
+        env:
+          PGYER_PASSWORD: ${{ secrets.PGYER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          apk="$(ls app/build/outputs/apk/release/*.apk | head -1)"
+          notes="MiHealthBridge ${GITHUB_REF_NAME}，更新说明见 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+          install_args=()
+          if [ -n "${PGYER_PASSWORD:-}" ]; then
+            install_args=(--data-urlencode "buildInstallType=2" --data-urlencode "buildPassword=${PGYER_PASSWORD}")
+          fi
+
+          # 1. 获取上传地址和签名
+          token="$(curl -sS -X POST https://www.pgyer.com/apiv2/app/getCOSToken \
+            --data-urlencode "_api_key=${PGYER_API_KEY}" \
+            --data-urlencode "buildType=android" \
+            --data-urlencode "buildUpdateDescription=${notes}" \
+            "${install_args[@]}")"
+          if [ "$(jq -r .code <<<"$token")" != "0" ]; then
+            echo "::error::蒲公英获取上传地址失败：$(jq -r .message <<<"$token")"
+            exit 1
+          fi
+          endpoint="$(jq -r .data.endpoint <<<"$token")"
+          build_key="$(jq -r .data.key <<<"$token")"
+
+          # 2. 上传 APK（成功返回 HTTP 204）
+          status="$(curl -sS -o "$RUNNER_TEMP/pgyer-upload.txt" -w '%{http_code}' -X POST "$endpoint" \
+            --form-string "key=$(jq -r .data.params.key <<<"$token")" \
+            --form-string "signature=$(jq -r .data.params.signature <<<"$token")" \
+            --form-string "x-cos-security-token=$(jq -r '.data.params["x-cos-security-token"]' <<<"$token")" \
+            --form-string "x-cos-meta-file-name=$(basename "$apk")" \
+            -F "file=@${apk}")"
+          if [ "$status" != "204" ]; then
+            echo "::error::上传 APK 到蒲公英失败：HTTP $status"
+            cat "$RUNNER_TEMP/pgyer-upload.txt"
+            exit 1
+          fi
+
+          # 3. 轮询发布结果（1247 = 正在发布）
+          for _ in $(seq 1 60); do
+            info="$(curl -sS -G https://www.pgyer.com/apiv2/app/buildInfo \
+              --data-urlencode "_api_key=${PGYER_API_KEY}" \
+              --data-urlencode "buildKey=${build_key}")"
+            code="$(jq -r .code <<<"$info")"
+            if [ "$code" = "0" ]; then
+              url="https://www.pgyer.com/$(jq -r .data.buildShortcutUrl <<<"$info")"
+              version="$(jq -r .data.buildVersion <<<"$info") ($(jq -r .data.buildVersionNo <<<"$info"))"
+              qr="$(jq -r .data.buildQRCodeURL <<<"$info")"
+              echo "::notice::蒲公英发布成功：${url}  版本 ${version}"
+              {
+                echo "### 蒲公英下载"
+                echo ""
+                echo "- 下载页：${url}"
+                echo "- 版本：${version}"
+                echo ""
+                echo "![二维码](${qr})"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            elif [ "$code" = "1247" ]; then
+              sleep 5
+            else
+              echo "::error::蒲公英发布失败：code=${code} $(jq -r .message <<<"$info")"
+              exit 1
+            fi
+          done
+          echo "::error::等待蒲公英发布结果超时"
+          exit 1
