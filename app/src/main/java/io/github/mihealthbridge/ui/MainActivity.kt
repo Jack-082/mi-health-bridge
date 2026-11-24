@@ -63,6 +63,7 @@ import io.github.mihealthbridge.sync.BleAuthProbe
 import io.github.mihealthbridge.sync.BleGattProbe
 import io.github.mihealthbridge.sync.BleScaleProbe
 import io.github.mihealthbridge.sync.MiHomeProbe
+import io.github.mihealthbridge.sync.ScaleBleSync
 import io.github.mihealthbridge.sync.Settings
 import io.github.mihealthbridge.sync.SyncReport
 import io.github.mihealthbridge.sync.SyncScheduler
@@ -88,6 +89,8 @@ internal data class UiState(
     val scaleModel: String,
     val scaleMember: String,
     val scaleMembers: List<String>,
+    val scaleBle: Boolean,
+    val scaleBleResult: String,
 )
 
 /** 后台同步任务的状态。 */
@@ -143,6 +146,7 @@ class MainActivity : ComponentActivity() {
         showDisclaimer = !settings.disclaimerAccepted
         SyncScheduler.ensurePeriodic(this)
         lifecycleScope.launch(Dispatchers.IO) { runCatching { SyncScheduler.ensureFast(applicationContext) } }
+        if (settings.scaleBleEnabled) runCatching { ScaleBleSync.startScan(applicationContext) }
         setContent { BridgeTheme { Surface(Modifier.fillMaxSize(), color = Palette.Tint) { Screen() } } }
     }
 
@@ -191,6 +195,8 @@ class MainActivity : ComponentActivity() {
         scaleModel = settings.scaleModel,
         scaleMember = settings.scaleMember,
         scaleMembers = settings.scaleMembersSeen,
+        scaleBle = settings.scaleBleEnabled,
+        scaleBleResult = settings.scaleBleLastResult,
     )
 
     private fun openLogin() = loginLauncher.launch(Intent(this, LoginActivity::class.java))
@@ -207,6 +213,40 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun bleProbe() = withBlePermission { startBleProbe() }
+
+    /** 开启/关闭蓝牙直连体脂秤。 */
+    private fun setScaleBle(on: Boolean) {
+        if (!on) {
+            settings.scaleBleEnabled = false
+            ScaleBleSync.stopScan(applicationContext)
+            ScaleBleSync.log(applicationContext, "已关闭蓝牙直连")
+            refresh()
+            return
+        }
+        withBlePermission {
+            bleProbing = true
+            lifecycleScope.launch(Dispatchers.IO) {
+                val ok = runCatching { ScaleBleSync.ensureCredentials(applicationContext, forceRefresh = true) }
+                    .onFailure { ScaleBleSync.log(applicationContext, "获取秤的 token 失败：${it.message}") }
+                    .getOrDefault(false)
+                var started = false
+                if (ok) {
+                    settings.scaleBleEnabled = true
+                    started = ScaleBleSync.startScan(applicationContext)
+                    ScaleBleSync.log(applicationContext, if (started) "已开启：称重时自动连接读数" else "已开启，但后台扫描注册失败（蓝牙是否已打开？）")
+                }
+                launch(Dispatchers.Main) {
+                    bleProbing = false
+                    toast(when {
+                        !ok -> "没有在米家账号里找到可直连的秤"
+                        started -> "已开启：手机放在秤附近，站上秤即可自动记录"
+                        else -> "已开启，但后台扫描注册失败，请确认蓝牙已打开"
+                    })
+                    refresh()
+                }
+            }
+        }
+    }
 
     /** 米家蓝牙认证诊断：登录后记录秤推送的加密数据并查询属性。 */
     private fun bleAuthProbe() = withBlePermission {
@@ -469,6 +509,18 @@ class MainActivity : ComponentActivity() {
                 s.scaleMember.isEmpty() && s.scaleMembers.size > 1 -> Status.Warn
                 else -> Status.Ok
             }
+            Section("蓝牙体脂秤", if (s.scaleBle) Status.Ok else Status.None) {
+                Caption("称重时手机直接通过蓝牙连接秤读取体重（目前适配如一 MJH-05）。使用小米账号里的设备 token 登录，不改变秤与米家的绑定。")
+                Segmented(
+                    options = listOf(false to "关闭", true to "开启"),
+                    selected = s.scaleBle,
+                ) { on -> setScaleBle(on) }
+                if (s.scaleBle) {
+                    StatRow("最近一次", s.scaleBleResult.ifEmpty { "还没有称重记录" })
+                    Caption("称重时手机需在秤附近并开着蓝牙；站到读数稳定（光脚可测阻抗）。由本应用读取后，米家 App 里不会出现这次称重。")
+                }
+            }
+
             Section("米家体脂秤", scaleStatus) {
                 Caption("同步绑定在米家 App 中的体脂秤（如小米体脂秤 S400），使用上面的小米账号，无需另外登录。")
                 Segmented(

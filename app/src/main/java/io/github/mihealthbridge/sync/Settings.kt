@@ -40,6 +40,11 @@ class Settings(context: Context) {
         get() = secure.getString("scaleMac", null)
         set(v) = secure.edit().putString("scaleMac", v).apply()
 
+    /** 秤的米家蓝牙登录 token（24 位 hex）。 */
+    var scaleToken: String?
+        get() = secure.getString("scaleToken", null)
+        set(v) = secure.edit().putString("scaleToken", v).apply()
+
     val isLoggedIn: Boolean get() = !userId.isNullOrEmpty() && !passToken.isNullOrEmpty()
 
     fun logout() = secure.edit().clear().apply()
@@ -92,6 +97,20 @@ class Settings(context: Context) {
     var scaleLastSuccessMillis: Long
         get() = prefs.getLong("scaleLastSuccess", 0L)
         set(v) = prefs.edit().putLong("scaleLastSuccess", v).apply()
+
+    /** 蓝牙直连体脂秤：称重时自动连接读数。 */
+    var scaleBleEnabled: Boolean
+        get() = prefs.getBoolean("scaleBleEnabled", false)
+        set(v) = prefs.edit().putBoolean("scaleBleEnabled", v).apply()
+
+    /** 上次蓝牙称重成功的时刻（用于同一次上秤去重）。 */
+    var scaleBleLastAt: Long
+        get() = prefs.getLong("scaleBleLastAt", 0L)
+        set(v) = prefs.edit().putLong("scaleBleLastAt", v).apply()
+
+    var scaleBleLastResult: String
+        get() = prefs.getString("scaleBleLastResult", "") ?: ""
+        set(v) = prefs.edit().putString("scaleBleLastResult", v).apply()
 
     /** 上次探测型号的时刻；没探测到时每 6 小时最多重试一次。 */
     var scaleProbeAt: Long
