@@ -59,6 +59,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkQuery
 import io.github.mihealthbridge.hc.HealthConnectWriter
+import io.github.mihealthbridge.sync.BleGattProbe
 import io.github.mihealthbridge.sync.BleScaleProbe
 import io.github.mihealthbridge.sync.MiHomeProbe
 import io.github.mihealthbridge.sync.Settings
@@ -109,14 +110,17 @@ class MainActivity : ComponentActivity() {
     private var showDisclaimer by mutableStateOf(false)
     private var diagnosing by mutableStateOf(false)
     private var bleProbing by mutableStateOf(false)
+    private var pendingBleAction: (() -> Unit)? = null
 
     private val blePermissions: Array<String> =
-        if (android.os.Build.VERSION.SDK_INT >= 31) arrayOf(android.Manifest.permission.BLUETOOTH_SCAN)
+        if (android.os.Build.VERSION.SDK_INT >= 31)
+            arrayOf(android.Manifest.permission.BLUETOOTH_SCAN, android.Manifest.permission.BLUETOOTH_CONNECT)
         else arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
 
     private val blePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-            if (granted.values.all { it }) startBleProbe() else toast("没有蓝牙扫描权限，无法诊断")
+            if (granted.values.all { it }) pendingBleAction?.invoke() else toast("没有蓝牙权限，无法诊断")
+            pendingBleAction = null
         }
 
     private val permissionLauncher =
@@ -190,12 +194,35 @@ class MainActivity : ComponentActivity() {
 
     private fun openLogin() = loginLauncher.launch(Intent(this, LoginActivity::class.java))
 
-    private fun bleProbe() {
+    private fun withBlePermission(action: () -> Unit) {
         if (bleProbing) return
         val missing = blePermissions.filter {
             checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isEmpty()) startBleProbe() else blePermissionLauncher.launch(missing.toTypedArray())
+        if (missing.isEmpty()) action() else {
+            pendingBleAction = action
+            blePermissionLauncher.launch(missing.toTypedArray())
+        }
+    }
+
+    private fun bleProbe() = withBlePermission { startBleProbe() }
+
+    /** 蓝牙连接诊断：等秤醒来后连接，记录服务/特征与称重时的通知。 */
+    private fun bleGattProbe() = withBlePermission {
+        bleProbing = true
+        toast("请先确认已强制停止米家 App，然后站上秤")
+        lifecycleScope.launch(Dispatchers.IO) {
+            val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
+            val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  $it") }
+            runCatching { BleGattProbe(applicationContext).run(log) }
+                .onFailure { log("蓝牙连接诊断失败：${it.javaClass.simpleName} ${it.message}") }
+            launch(Dispatchers.Main) {
+                bleProbing = false
+                logExpanded = true
+                toast("蓝牙连接诊断完成，结果在「详细日志」里")
+                refresh()
+            }
+        }
     }
 
     /** 蓝牙诊断：监听 60 秒体脂秤广播，结果写进详细日志。 */
@@ -464,6 +491,10 @@ class MainActivity : ComponentActivity() {
                         if (bleProbing) "蓝牙诊断中…请在 60 秒内称一次重" else "蓝牙诊断（60 秒内称一次重）",
                         Modifier.fillMaxWidth(), enabled = !bleProbing && s.loggedIn,
                     ) { bleProbe() }
+                    SecondaryButton(
+                        if (bleProbing) "蓝牙诊断中…" else "蓝牙连接诊断（先强制停止米家 App）",
+                        Modifier.fillMaxWidth(), enabled = !bleProbing && s.loggedIn,
+                    ) { bleGattProbe() }
                     if (s.scaleModel.isNotEmpty()) {
                         SecondaryButton("重新探测型号", Modifier.fillMaxWidth()) {
                             settings.scaleModel = ""
