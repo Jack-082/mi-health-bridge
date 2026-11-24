@@ -70,7 +70,10 @@ NFC 公交卡、支付、消息通知、表盘这些官方功能都不受影响�
 
 ### 下载 APK（推荐）
 
-到 [Releases](https://github.com/Jack-082/mi-health-bridge/releases/latest) 下载 `MiHealthBridge-<版本>-release.apk` 安装。
+- **国内用户**：打开 [蒲公英下载页](https://www.pgyer.com/mihealthbridge)，手机浏览器直接下载安装，始终是最新版本。
+- **GitHub**：到 [Releases](https://github.com/Jack-082/mi-health-bridge/releases/latest) 下载 `MiHealthBridge-<版本>-release.apk`。
+
+两处的安装包相同，签名证书 SHA-256 为 `ea52edcf6cbd5f15a9cd33ffc44111982a9e0c709b80324ff1b10a79368072e3`。
 
 正式版使用固定签名，以后的新版本可以**直接覆盖安装**，登录状态、同步进度和 Health Connect 授权都会保留。
 
