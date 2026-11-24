@@ -56,3 +56,9 @@ mi-fitness-mcp-cn — MIT License:
 Android libraries used by the app (AndroidX, Kotlin, OkHttp and others) are
 listed with their licenses on the in-app "开源许可" screen, generated at build
 time by AboutLibraries.
+
+The Mi Home BLE login handshake, session encryption, MiBeacon frame layout
+and MIoT-over-BLE message format are ported from ha-xiaomi-s400
+(https://github.com/snelstim/ha-xiaomi-s400, Apache-2.0), which builds on
+nokistin/xiaomi-s400-live and dnandha/miauth (Apache-2.0). The Mi Home scale
+API usage follows SmartScaleConnect (https://github.com/AlexxIT/SmartScaleConnect, MIT).

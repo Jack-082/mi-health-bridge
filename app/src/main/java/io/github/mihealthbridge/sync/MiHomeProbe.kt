@@ -11,7 +11,11 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /** 米家账号下的一台设备。 */
-data class MiHomeDevice(val did: String, val name: String, val model: String, val specType: String?, val mac: String)
+data class MiHomeDevice(
+    val did: String, val name: String, val model: String, val specType: String?, val mac: String,
+    /** 蓝牙设备的米家登录 token（24 位 hex）。 */
+    val token: String? = null,
+)
 
 /**
  * 米家云（api.io.mi.com，sid=xiaomiio）：列设备、查设备历史数据。
@@ -48,6 +52,7 @@ class MiHomeProbe(context: Context) {
                 model = d.optString("model"),
                 specType = d.optString("spec_type").ifEmpty { null },
                 mac = d.optString("mac").uppercase(),
+                token = d.optString("token").ifEmpty { null },
             )
         }
     }

@@ -93,35 +93,58 @@ object MiBeacon {
     private fun u8(b: ByteArray, i: Int) = b[i].toInt() and 0xFF
 }
 
-/** AES-CCM 解密（RFC 3610）。Android 自带 JCA 不支持 CCM，这里用 AES/ECB 自行实现。 */
+/** AES-CCM（RFC 3610）。Android 自带 JCA 不支持 CCM，这里用 AES/ECB 自行实现。 */
 object AesCcm {
+
+    /** 加密，返回 密文 + 标签（[tagLen] 字节）。 */
+    fun encrypt(key: ByteArray, nonce: ByteArray, plain: ByteArray, aad: ByteArray, tagLen: Int = 4): ByteArray {
+        val aes = aes(key)
+        val l = 15 - nonce.size
+        val tag = cbcMac(aes, nonce, l, tagLen, plain, aad)
+        val ct = ctr(aes, nonce, l, plain)
+        val s0 = ctrBlock(aes, nonce, l, 0)
+        return ct + ByteArray(tagLen) { (tag[it].toInt() xor s0[it].toInt()).toByte() }
+    }
 
     fun decrypt(key: ByteArray, nonce: ByteArray, cipherText: ByteArray, tag: ByteArray, aad: ByteArray): ByteArray? {
         val m = tag.size
         val l = 15 - nonce.size
         if (l !in 2..8 || m !in 4..16 || m % 2 != 0) return null
-        val aes = Cipher.getInstance("AES/ECB/NoPadding").apply { init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES")) }
+        val aes = aes(key)
+        val plain = ctr(aes, nonce, l, cipherText)
+        val x = cbcMac(aes, nonce, l, m, plain, aad)
+        val s0 = ctrBlock(aes, nonce, l, 0)
+        var diff = 0
+        for (k in 0 until m) diff = diff or ((x[k].toInt() xor s0[k].toInt()) xor tag[k].toInt())
+        return if (diff and 0xFF == 0) plain else null
+    }
 
-        fun ctrBlock(i: Int): ByteArray {
-            val a = ByteArray(16)
-            a[0] = (l - 1).toByte()
-            nonce.copyInto(a, 1)
-            var v = i
-            for (k in 15 downTo 16 - l) { a[k] = (v and 0xFF).toByte(); v = v ushr 8 }
-            return aes.doFinal(a)
-        }
+    private fun aes(key: ByteArray) =
+        Cipher.getInstance("AES/ECB/NoPadding").apply { init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES")) }
 
-        // CTR 解密
-        val plain = ByteArray(cipherText.size)
+    private fun ctrBlock(aes: Cipher, nonce: ByteArray, l: Int, i: Int): ByteArray {
+        val a = ByteArray(16)
+        a[0] = (l - 1).toByte()
+        nonce.copyInto(a, 1)
+        var v = i
+        for (k in 15 downTo 16 - l) { a[k] = (v and 0xFF).toByte(); v = v ushr 8 }
+        return aes.doFinal(a)
+    }
+
+    private fun ctr(aes: Cipher, nonce: ByteArray, l: Int, input: ByteArray): ByteArray {
+        val out = ByteArray(input.size)
         var blk = 1
         var off = 0
-        while (off < cipherText.size) {
-            val s = ctrBlock(blk++)
-            for (k in 0 until minOf(16, cipherText.size - off)) plain[off + k] = (cipherText[off + k].toInt() xor s[k].toInt()).toByte()
+        while (off < input.size) {
+            val s = ctrBlock(aes, nonce, l, blk++)
+            for (k in 0 until minOf(16, input.size - off)) out[off + k] = (input[off + k].toInt() xor s[k].toInt()).toByte()
             off += 16
         }
+        return out
+    }
 
-        // CBC-MAC
+    /** CBC-MAC，返回完整 16 字节（调用方取前 m 字节）。 */
+    private fun cbcMac(aes: Cipher, nonce: ByteArray, l: Int, m: Int, plain: ByteArray, aad: ByteArray): ByteArray {
         val b0 = ByteArray(16)
         b0[0] = ((if (aad.isNotEmpty()) 0x40 else 0) or (((m - 2) / 2) shl 3) or (l - 1)).toByte()
         nonce.copyInto(b0, 1)
@@ -138,16 +161,27 @@ object AesCcm {
                 p += 16
             }
         }
-        if (aad.isNotEmpty()) {
-            require(aad.size < 0xFF00)
-            absorb(byteArrayOf((aad.size ushr 8).toByte(), aad.size.toByte()) + aad)
-        }
+        if (aad.isNotEmpty()) absorb(byteArrayOf((aad.size ushr 8).toByte(), aad.size.toByte()) + aad)
         absorb(plain)
+        return x
+    }
+}
 
-        val s0 = ctrBlock(0)
-        val expected = ByteArray(m) { (x[it].toInt() xor s0[it].toInt()).toByte() }
-        var diff = 0
-        for (k in 0 until m) diff = diff or (expected[k].toInt() xor tag[k].toInt())
-        return if (diff == 0) plain else null
+/** HKDF-SHA256（RFC 5869）与 HMAC-SHA256。 */
+object Hkdf {
+    fun hmac(key: ByteArray, data: ByteArray): ByteArray =
+        javax.crypto.Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, "HmacSHA256")) }.doFinal(data)
+
+    fun derive(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int): ByteArray {
+        val prk = hmac(if (salt.isEmpty()) ByteArray(32) else salt, ikm)
+        val out = java.io.ByteArrayOutputStream()
+        var t = ByteArray(0)
+        var i = 1
+        while (out.size() < length) {
+            t = hmac(prk, t + info + byteArrayOf(i.toByte()))
+            out.write(t)
+            i++
+        }
+        return out.toByteArray().copyOf(length)
     }
 }

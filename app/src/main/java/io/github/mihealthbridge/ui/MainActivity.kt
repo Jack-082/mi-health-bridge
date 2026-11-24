@@ -59,6 +59,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkQuery
 import io.github.mihealthbridge.hc.HealthConnectWriter
+import io.github.mihealthbridge.sync.BleAuthProbe
 import io.github.mihealthbridge.sync.BleGattProbe
 import io.github.mihealthbridge.sync.BleScaleProbe
 import io.github.mihealthbridge.sync.MiHomeProbe
@@ -206,6 +207,24 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun bleProbe() = withBlePermission { startBleProbe() }
+
+    /** 米家蓝牙认证诊断：登录后记录秤推送的加密数据并查询属性。 */
+    private fun bleAuthProbe() = withBlePermission {
+        bleProbing = true
+        toast("请现在站上秤，一直站到读数稳定")
+        lifecycleScope.launch(Dispatchers.IO) {
+            val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
+            val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  $it") }
+            runCatching { BleAuthProbe(applicationContext).probe(log) }
+                .onFailure { log("米家蓝牙认证诊断失败：${it.javaClass.simpleName} ${it.message}") }
+            launch(Dispatchers.Main) {
+                bleProbing = false
+                logExpanded = true
+                toast("认证诊断完成，结果在「详细日志」里")
+                refresh()
+            }
+        }
+    }
 
     /** 蓝牙连接诊断：等秤醒来后连接，记录服务/特征与称重时的通知。 */
     private fun bleGattProbe() = withBlePermission {
@@ -495,6 +514,10 @@ class MainActivity : ComponentActivity() {
                         if (bleProbing) "蓝牙诊断中…" else "蓝牙连接诊断（先强制停止米家 App）",
                         Modifier.fillMaxWidth(), enabled = !bleProbing && s.loggedIn,
                     ) { bleGattProbe() }
+                    PrimaryButton(
+                        if (bleProbing) "蓝牙诊断中…" else "米家蓝牙认证诊断（点后立即站上秤）",
+                        Modifier.fillMaxWidth(), enabled = !bleProbing && s.loggedIn,
+                    ) { bleAuthProbe() }
                     if (s.scaleModel.isNotEmpty()) {
                         SecondaryButton("重新探测型号", Modifier.fillMaxWidth()) {
                             settings.scaleModel = ""
