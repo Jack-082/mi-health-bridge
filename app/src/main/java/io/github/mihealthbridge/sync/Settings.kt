@@ -74,6 +74,6 @@ class Settings(context: Context) {
         return true
     }
 
-    /** 全量重同步：重置同步窗口，并重新输出睡眠诊断。 */
-    fun resetSyncState() = prefs.edit().remove("lastSuccess").remove("sleepDiag").apply()
+    /** 全量重同步时调用，让睡眠诊断重新输出。 */
+    fun clearSleepDiag() = prefs.edit().remove("sleepDiag").apply()
 }

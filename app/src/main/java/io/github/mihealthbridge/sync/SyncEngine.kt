@@ -40,10 +40,11 @@ class SyncEngine(private val context: Context) {
     private val settings = Settings(context)
     private val cloud = MiCloudClient()
 
-    suspend fun run(): SyncOutcome = lock.withLock {
+    /** [full] = true：忽略上次同步时间，按回溯天数重新拉取（不清空状态，避免与并发的自动同步互相覆盖）。 */
+    suspend fun run(full: Boolean = false): SyncOutcome = lock.withLock {
         withContext(Dispatchers.IO) {
             val outcome = try {
-                doSync()
+                doSync(full)
             } catch (e: Exception) {
                 SyncOutcome.Failed(e)
             }
@@ -53,7 +54,7 @@ class SyncEngine(private val context: Context) {
         }
     }
 
-    private suspend fun doSync(): SyncOutcome {
+    private suspend fun doSync(full: Boolean): SyncOutcome {
         if (!settings.isLoggedIn) return SyncOutcome.NotLoggedIn
         if (HealthConnectWriter.sdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) {
             return SyncOutcome.HealthConnectUnavailable
@@ -62,7 +63,11 @@ class SyncEngine(private val context: Context) {
         val nowMs = System.currentTimeMillis()
         val nowSec = nowMs / 1000
         val last = settings.lastSuccessMillis
-        val anchorSec = if (last > 0) last / 1000 - 6 * 3600 else nowSec - settings.initialDays * 86_400L
+        val anchorSec = if (!full && last > 0) last / 1000 - 6 * 3600 else nowSec - settings.initialDays * 86_400L
+        if (full) {
+            settings.clearSleepDiag()
+            log("开始全量重同步：回溯 ${settings.initialDays} 天")
+        }
         val zone = ZoneId.systemDefault()
         val startSec = Instant.ofEpochSecond(anchorSec).atZone(zone).toLocalDate()
             .atStartOfDay(zone).toEpochSecond()

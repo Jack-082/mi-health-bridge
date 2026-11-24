@@ -22,19 +22,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -45,6 +50,9 @@ import androidx.compose.ui.unit.sp
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.lifecycleScope
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import androidx.work.WorkQuery
 import io.github.mihealthbridge.hc.HealthConnectWriter
 import io.github.mihealthbridge.sync.Settings
 import io.github.mihealthbridge.sync.SyncScheduler
@@ -67,6 +75,14 @@ internal data class UiState(
     val log: String,
 )
 
+/** 后台同步任务的状态。 */
+internal enum class SyncActivity(val label: String?) {
+    Idle(null),
+    Queued("已排队，等待网络或当前同步结束…"),
+    Running("同步中…"),
+    RunningFull("全量重同步中…"),
+}
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var settings: Settings
@@ -76,6 +92,7 @@ class MainActivity : ComponentActivity() {
     private var grantedCount by mutableIntStateOf(0)
     private var hcStatus by mutableIntStateOf(HealthConnectClient.SDK_UNAVAILABLE)
     private var batteryIgnored by mutableStateOf(false)
+    private var logExpanded by mutableStateOf(false)
 
     private val permissionLauncher =
         registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { refresh() }
@@ -95,7 +112,7 @@ class MainActivity : ComponentActivity() {
         settings = Settings(this)
         SyncScheduler.ensurePeriodic(this)
         lifecycleScope.launch(Dispatchers.IO) { runCatching { SyncScheduler.ensureFast(applicationContext) } }
-        setContent { BridgeTheme { Surface(Modifier.fillMaxSize(), color = Palette.Paper) { Screen() } } }
+        setContent { BridgeTheme { Surface(Modifier.fillMaxSize(), color = Palette.Tint) { Screen() } } }
     }
 
     override fun onResume() {
@@ -142,8 +159,15 @@ class MainActivity : ComponentActivity() {
 
     private fun openLogin() = loginLauncher.launch(Intent(this, LoginActivity::class.java))
 
+    private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+
     private val versionName: String by lazy {
         runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull().orEmpty()
+    }
+
+    private val syncWork by lazy {
+        WorkManager.getInstance(applicationContext)
+            .getWorkInfosFlow(WorkQuery.fromUniqueWorkNames(SyncScheduler.UNIQUE_NAMES))
     }
 
     @Composable
@@ -156,6 +180,20 @@ class MainActivity : ComponentActivity() {
         val s = remember(tick) { snapshot() }
         val totalPerms = HealthConnectWriter.PERMISSIONS.size
         val clipboard = LocalClipboardManager.current
+
+        val work by syncWork.collectAsState(initial = emptyList())
+        val running = work.filter { it.state == WorkInfo.State.RUNNING }
+        val activity = when {
+            running.any { SyncScheduler.TAG_FULL in it.tags } -> SyncActivity.RunningFull
+            running.isNotEmpty() -> SyncActivity.Running
+            work.any { SyncScheduler.TAG_MANUAL in it.tags && it.state == WorkInfo.State.ENQUEUED } -> SyncActivity.Queued
+            else -> SyncActivity.Idle
+        }
+        val busy = activity != SyncActivity.Idle
+        // 全量任务会排在当前同步之后执行，所以只在已有全量任务时才禁用该按钮
+        val fullPending = work.any {
+            SyncScheduler.TAG_FULL in it.tags && (it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.RUNNING)
+        }
 
         val accountStatus = when {
             !s.loggedIn -> Status.None
@@ -176,28 +214,26 @@ class MainActivity : ComponentActivity() {
 
         Column(
             Modifier.fillMaxSize().systemBarsPadding().verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // 标题区
-            Column(Modifier.padding(top = 28.dp, bottom = 16.dp)) {
+            Column(Modifier.padding(start = 4.dp, top = 24.dp, bottom = 4.dp)) {
                 Text("MiHealthBridge", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Palette.Ink, letterSpacing = (-0.3).sp)
                 Spacer(Modifier.height(4.dp))
                 Text("小米运动健康 → Health Connect", fontSize = 13.sp, color = Palette.Muted)
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                     LegendItem(accountStatus, "账号")
                     LegendItem(permStatus, "权限")
                     LegendItem(syncStatus, "同步")
                 }
             }
-            HorizontalDivider(thickness = 1.5.dp, color = Palette.Ink)
 
-            Panel("a", "小米账号") {
+            Section("小米账号", accountStatus) {
                 if (s.loggedIn) {
-                    StatTable {
-                        StatRow("账号 ID", s.userId, accountStatus)
-                        StatRow("状态", if (s.needsRelogin) "登录已过期" else "已登录")
-                    }
+                    StatRow("账号 ID", s.userId)
+                    StatRow("状态", if (s.needsRelogin) "登录已过期" else "已登录")
                     if (s.needsRelogin) Caption("登录已过期，请重新登录后继续同步。", Palette.Red)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         SecondaryButton("重新登录", Modifier.weight(1f)) { openLogin() }
@@ -208,14 +244,11 @@ class MainActivity : ComponentActivity() {
                     PrimaryButton("登录小米账号", Modifier.fillMaxWidth()) { openLogin() }
                 }
             }
-            HorizontalDivider(thickness = 0.5.dp, color = Palette.Rule)
 
-            Panel("b", "Health Connect") {
+            Section("Health Connect", permStatus) {
                 when (hcStatus) {
                     HealthConnectClient.SDK_AVAILABLE -> {
-                        StatTable {
-                            StatRow("写入权限", "$grantedCount / $totalPerms", permStatus)
-                        }
+                        StatRow("写入权限", "$grantedCount / $totalPerms")
                         PrimaryButton("授权写入", Modifier.fillMaxWidth()) {
                             permissionLauncher.launch(HealthConnectWriter.PERMISSIONS)
                         }
@@ -227,52 +260,65 @@ class MainActivity : ComponentActivity() {
                     else -> Caption("此设备不支持 Health Connect（需 Android 9+，Android 13 及以下需安装 Health Connect 应用）。", Palette.Red)
                 }
             }
-            HorizontalDivider(thickness = 0.5.dp, color = Palette.Rule)
 
-            Panel("c", "同步") {
-                StatTable {
-                    StatRow("上次成功", if (s.lastSuccess > 0) fmt(s.lastSuccess) else "从未")
-                    StatRow("最近结果", s.lastResult.ifEmpty { "—" }, syncStatus)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    PrimaryButton("立即同步", Modifier.weight(1f)) { SyncScheduler.syncNow(this@MainActivity) }
-                    SecondaryButton("全量重同步", Modifier.weight(1f)) {
-                        settings.resetSyncState()
-                        SyncScheduler.syncNow(this@MainActivity)
+            Section("同步", syncStatus) {
+                StatRow("上次成功", if (s.lastSuccess > 0) fmt(s.lastSuccess) else "从未")
+                StatRow("最近结果", s.lastResult.ifEmpty { "—" })
+                activity.label?.let { label ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(14.dp), color = Palette.Navy, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(label, fontSize = 13.sp, color = Palette.Navy)
                     }
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PrimaryButton("立即同步", Modifier.weight(1f), enabled = !busy) {
+                        SyncScheduler.syncNow(this@MainActivity)
+                        toast("已开始同步")
+                    }
+                    SecondaryButton("全量重同步", Modifier.weight(1f), enabled = !fullPending) {
+                        SyncScheduler.syncNow(this@MainActivity, full = true)
+                        toast("已开始全量重同步：回溯 ${s.initialDays} 天")
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
                 FieldLabel("同步间隔")
                 Segmented(
                     options = listOf(2 to "2 min", 5 to "5 min", 10 to "10 min", 0 to "15 min"),
                     selected = s.fastMinutes,
                 ) { m -> SyncScheduler.setFastMode(this@MainActivity, m); refresh() }
                 Caption("15 分钟兜底任务始终开启；更短间隔会额外调度单次任务。")
-                FieldLabel("首次 / 全量同步回溯天数")
+                FieldLabel("全量重同步回溯天数")
                 Segmented(
                     options = listOf(1 to "1 d", 7 to "7 d", 30 to "30 d", 90 to "90 d"),
                     selected = s.initialDays,
                 ) { d -> settings.initialDays = d; refresh() }
+                Caption("全量重同步会重新拉取这段时间的数据，覆盖 Health Connect 中本应用写入的记录。")
                 if (!batteryIgnored) {
                     SecondaryButton("关闭电池优化（后台同步更及时）", Modifier.fillMaxWidth()) { requestIgnoreBattery() }
                 }
             }
-            HorizontalDivider(thickness = 0.5.dp, color = Palette.Rule)
 
-            Panel("d", "日志") {
+            val logLines = s.log.lines().filter { it.isNotBlank() }
+            CollapsibleSection(
+                title = "日志",
+                summary = if (logLines.isEmpty()) "暂无" else "${logLines.size} 行",
+                expanded = logExpanded,
+                onToggle = { logExpanded = !logExpanded },
+            ) {
                 SecondaryButton("复制全部日志", Modifier.fillMaxWidth()) {
                     clipboard.setText(AnnotatedString(s.log))
-                    Toast.makeText(this@MainActivity, "已复制 ${s.log.lines().count { it.isNotBlank() }} 行日志", Toast.LENGTH_SHORT).show()
+                    toast("已复制 ${logLines.size} 行日志")
                 }
-                Box(Modifier.fillMaxWidth().background(Palette.Tint).padding(12.dp)) {
+                Box(Modifier.fillMaxWidth().background(Palette.Tint, RoundedCornerShape(8.dp)).padding(12.dp)) {
                     Text(
-                        s.log.lines().takeLast(60).reversed().joinToString("\n").ifEmpty { "暂无" },
+                        logLines.takeLast(60).reversed().joinToString("\n").ifEmpty { "暂无" },
                         fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp, color = Palette.Ink,
                     )
                 }
             }
 
-            HorizontalDivider(thickness = 1.5.dp, color = Palette.Ink)
-            Column(Modifier.padding(top = 10.dp, bottom = 28.dp)) {
+            Column(Modifier.padding(start = 4.dp, top = 4.dp, bottom = 24.dp)) {
                 Caption("仅向 Health Connect 写入数据，不读取；小米账号凭据加密保存在本机。")
                 Spacer(Modifier.height(2.dp))
                 Caption("MiHealthBridge v$versionName", Palette.Faint)

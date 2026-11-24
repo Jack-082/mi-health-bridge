@@ -21,7 +21,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -38,7 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * 期刊插图风格（Nature / Cell / Science）：白底、细线、克制配色，
+ * 期刊插图风格（Nature / Cell / Science）：浅底白卡片、细边框、克制配色，
  * 主色取自 Nature Publishing Group 常用调色板。
  */
 object Palette {
@@ -49,8 +48,8 @@ object Palette {
     val Ink = Color(0xFF1A1A1A)
     val Muted = Color(0xFF6B6B6B)
     val Faint = Color(0xFFB4B4B4)
-    val Rule = Color(0xFFDADADA)
-    val Tint = Color(0xFFF6F6F4)
+    val Rule = Color(0xFFE2E2E2)
+    val Tint = Color(0xFFF5F5F3)
     val Paper = Color.White
 }
 
@@ -58,14 +57,15 @@ enum class Status(val color: Color) {
     Ok(Palette.Teal), Warn(Palette.Salmon), Error(Palette.Red), None(Palette.Faint)
 }
 
-private val SmallShape = RoundedCornerShape(4.dp)
+private val SmallShape = RoundedCornerShape(6.dp)
+private val CardShape = RoundedCornerShape(12.dp)
 private val Tabular = TextStyle(fontFeatureSettings = "tnum")
 
 private val Scheme = lightColorScheme(
     primary = Palette.Navy, onPrimary = Color.White,
     secondary = Palette.Teal, onSecondary = Color.White,
     error = Palette.Red, onError = Color.White,
-    background = Palette.Paper, onBackground = Palette.Ink,
+    background = Palette.Tint, onBackground = Palette.Ink,
     surface = Palette.Paper, onSurface = Palette.Ink,
     surfaceVariant = Palette.Tint, onSurfaceVariant = Palette.Muted,
     outline = Palette.Rule, outlineVariant = Palette.Rule,
@@ -76,35 +76,55 @@ fun BridgeTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = Scheme, content = content)
 }
 
-/** 分图：粗体小写字母编号 + 标题，与论文 Figure 的 a / b / c 一致。 */
+private fun Modifier.card() = this
+    .fillMaxWidth()
+    .clip(CardShape)
+    .background(Palette.Paper)
+    .border(1.dp, Palette.Rule, CardShape)
+
+/** 带边框的卡片分区：标题 + 右侧状态点。 */
 @Composable
-fun Panel(label: String, title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().padding(vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Row {
-            Text(label, Modifier.alignByBaseline(), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
-            Spacer(Modifier.width(10.dp))
-            Text(title, Modifier.alignByBaseline(), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Palette.Ink)
+fun Section(title: String, status: Status? = null, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.card().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Palette.Ink)
+            if (status != null) Dot(status.color, 8)
         }
         content()
     }
 }
 
-/** 三线表：上下粗线，中间不画竖线和行线。 */
+/** 可折叠的卡片分区：点标题行展开/收起。 */
 @Composable
-fun StatTable(content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth()) {
-        HorizontalDivider(thickness = 1.dp, color = Palette.Ink)
-        Column(Modifier.padding(vertical = 4.dp)) { content() }
-        HorizontalDivider(thickness = 1.dp, color = Palette.Ink)
+fun CollapsibleSection(
+    title: String,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(Modifier.card()) {
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Palette.Ink)
+            Spacer(Modifier.width(8.dp))
+            Text(summary, Modifier.weight(1f), fontSize = 12.sp, color = Palette.Muted)
+            Text(if (expanded) "收起 ▴" else "展开 ▾", fontSize = 13.sp, color = Palette.Navy)
+        }
+        if (expanded) {
+            Column(
+                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) { content() }
+        }
     }
 }
 
 @Composable
 fun StatRow(label: String, value: String, status: Status? = null) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, Modifier.weight(0.38f), fontSize = 13.sp, color = Palette.Muted)
         Row(Modifier.weight(0.62f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
             if (status != null) {
@@ -138,29 +158,31 @@ fun Caption(text: String, color: Color = Palette.Muted) {
 }
 
 @Composable
-fun PrimaryButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun PrimaryButton(text: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         modifier = modifier.height(40.dp),
+        enabled = enabled,
         shape = SmallShape,
         colors = ButtonDefaults.buttonColors(containerColor = Palette.Navy, contentColor = Color.White),
-        contentPadding = PaddingValues(horizontal = 16.dp),
-    ) { Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+        contentPadding = PaddingValues(horizontal = 12.dp),
+    ) { Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1) }
 }
 
 @Composable
-fun SecondaryButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun SecondaryButton(text: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     OutlinedButton(
         onClick = onClick,
         modifier = modifier.height(40.dp),
+        enabled = enabled,
         shape = SmallShape,
-        border = BorderStroke(1.dp, Palette.Navy),
+        border = BorderStroke(1.dp, if (enabled) Palette.Navy else Palette.Rule),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.Navy),
-        contentPadding = PaddingValues(horizontal = 16.dp),
-    ) { Text(text, fontSize = 14.sp) }
+        contentPadding = PaddingValues(horizontal = 12.dp),
+    ) { Text(text, fontSize = 14.sp, maxLines = 1) }
 }
 
-/** 分段选择器，替代圆角 Chip，更接近图表里的刻度/分组。 */
+/** 分段选择器。 */
 @Composable
 fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
     Row(Modifier.fillMaxWidth().height(34.dp).clip(SmallShape).border(1.dp, Palette.Navy, SmallShape)) {
