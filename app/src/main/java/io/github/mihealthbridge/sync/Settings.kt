@@ -98,6 +98,20 @@ class Settings(context: Context) {
         get() = prefs.getLong("scaleLastSuccess", 0L)
         set(v) = prefs.edit().putLong("scaleLastSuccess", v).apply()
 
+    /** 体脂秤检测结果：ble / cloud / unsupported / none；空 = 尚未检测。 */
+    var scaleKind: String
+        get() = prefs.getString("scaleKind", "") ?: ""
+        set(v) = prefs.edit().putString("scaleKind", v).apply()
+
+    var scaleName: String
+        get() = prefs.getString("scaleName", "") ?: ""
+        set(v) = prefs.edit().putString("scaleName", v).apply()
+
+    /** 检测时看到的蓝牙广播摘要。 */
+    var scaleBroadcast: String
+        get() = prefs.getString("scaleBroadcast", "") ?: ""
+        set(v) = prefs.edit().putString("scaleBroadcast", v).apply()
+
     /** 蓝牙直连体脂秤：称重时自动连接读数。 */
     var scaleBleEnabled: Boolean
         get() = prefs.getBoolean("scaleBleEnabled", false)

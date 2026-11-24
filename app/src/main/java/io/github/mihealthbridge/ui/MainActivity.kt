@@ -64,6 +64,7 @@ import io.github.mihealthbridge.sync.BleGattProbe
 import io.github.mihealthbridge.sync.BleScaleProbe
 import io.github.mihealthbridge.sync.MiHomeProbe
 import io.github.mihealthbridge.sync.ScaleBleSync
+import io.github.mihealthbridge.sync.ScaleSetup
 import io.github.mihealthbridge.sync.Settings
 import io.github.mihealthbridge.sync.SyncReport
 import io.github.mihealthbridge.sync.SyncScheduler
@@ -91,6 +92,9 @@ internal data class UiState(
     val scaleMembers: List<String>,
     val scaleBle: Boolean,
     val scaleBleResult: String,
+    val scaleKind: String,
+    val scaleName: String,
+    val scaleBroadcast: String,
 )
 
 /** 后台同步任务的状态。 */
@@ -111,6 +115,12 @@ class MainActivity : ComponentActivity() {
     private var hcStatus by mutableIntStateOf(HealthConnectClient.SDK_UNAVAILABLE)
     private var batteryIgnored by mutableStateOf(false)
     private var logExpanded by mutableStateOf(false)
+    private var reportExpanded by mutableStateOf(false)
+    private var scaleDiagExpanded by mutableStateOf(false)
+    /** 体脂秤检测进行中时的阶段提示；null = 未在检测。 */
+    private var detectPhase by mutableStateOf<String?>(null)
+    /** 申请蓝牙权限后无论是否授予都要继续的操作（检测时云端部分不依赖蓝牙）。 */
+    private var pendingAfterPermission: (() -> Unit)? = null
     private var showDisclaimer by mutableStateOf(false)
     private var diagnosing by mutableStateOf(false)
     private var bleProbing by mutableStateOf(false)
@@ -123,8 +133,11 @@ class MainActivity : ComponentActivity() {
 
     private val blePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-            if (granted.values.all { it }) pendingBleAction?.invoke() else toast("没有蓝牙权限，无法诊断")
+            if (granted.values.all { it }) pendingBleAction?.invoke()
+            else if (pendingBleAction != null) toast("没有蓝牙权限，无法诊断")
             pendingBleAction = null
+            pendingAfterPermission?.invoke()
+            pendingAfterPermission = null
         }
 
     private val permissionLauncher =
@@ -197,6 +210,9 @@ class MainActivity : ComponentActivity() {
         scaleMembers = settings.scaleMembersSeen,
         scaleBle = settings.scaleBleEnabled,
         scaleBleResult = settings.scaleBleLastResult,
+        scaleKind = ScaleSetup.currentKind(settings),
+        scaleName = settings.scaleName,
+        scaleBroadcast = settings.scaleBroadcast,
     )
 
     private fun openLogin() = loginLauncher.launch(Intent(this, LoginActivity::class.java))
@@ -503,97 +519,20 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            val scaleStatus = when {
-                !s.scaleEnabled -> Status.None
-                s.scaleModel.isEmpty() -> Status.Warn
-                s.scaleMember.isEmpty() && s.scaleMembers.size > 1 -> Status.Warn
-                else -> Status.Ok
-            }
-            Section("蓝牙体脂秤", if (s.scaleBle) Status.Ok else Status.None) {
-                Caption("称重时手机直接通过蓝牙连接秤读取体重（目前适配如一 MJH-05）。使用小米账号里的设备 token 登录，不改变秤与米家的绑定。")
-                Segmented(
-                    options = listOf(false to "关闭", true to "开启"),
-                    selected = s.scaleBle,
-                ) { on -> setScaleBle(on) }
-                if (s.scaleBle) {
-                    StatRow("最近一次", s.scaleBleResult.ifEmpty { "还没有称重记录" })
-                    Caption("称重时手机需在秤附近并开着蓝牙；站到读数稳定（光脚可测阻抗）。由本应用读取后，米家 App 里不会出现这次称重。")
-                }
-            }
-
-            Section("米家体脂秤", scaleStatus) {
-                Caption("同步绑定在米家 App 中的体脂秤（如小米体脂秤 S400），使用上面的小米账号，无需另外登录。")
-                Segmented(
-                    options = listOf(false to "关闭", true to "开启"),
-                    selected = s.scaleEnabled,
-                ) { on ->
-                    settings.scaleEnabled = on
-                    if (on) {
-                        settings.scaleProbeAt = 0L // 立即探测型号
-                        SyncScheduler.syncNow(this@MainActivity, full = true)
-                        toast("已开启，正在拉取最近 ${s.initialDays} 天的称重数据")
-                    }
-                    refresh()
-                }
-                if (s.scaleEnabled) {
-                    StatRow("型号", s.scaleModel.ifEmpty { "探测中 / 未找到" })
-                    if (s.scaleMembers.isNotEmpty()) {
-                        FieldLabel("只同步这位成员")
-                        Segmented(
-                            options = listOf("" to "自动") + s.scaleMembers.map { it to it },
-                            selected = s.scaleMember,
-                        ) { m ->
-                            settings.scaleMember = m
-                            SyncScheduler.syncNow(this@MainActivity, full = true)
-                            refresh()
-                        }
-                        Caption(
-                            if (s.scaleMembers.size > 1 && s.scaleMember.isEmpty())
-                                "秤上有多位家庭成员，请选择你自己，否则不会写入任何称重数据。"
-                            else "「自动」：秤上只有一位成员时直接同步。",
-                            if (s.scaleMembers.size > 1 && s.scaleMember.isEmpty()) Palette.Red else Palette.Muted,
-                        )
-                    }
-                    SecondaryButton(
-                        if (diagnosing) "诊断中…" else "诊断（查找秤并检查能读到的数据）",
-                        Modifier.fillMaxWidth(), enabled = !diagnosing && s.loggedIn,
-                    ) { diagnoseScale() }
-                    SecondaryButton(
-                        if (bleProbing) "蓝牙诊断中…请在 60 秒内称一次重" else "蓝牙诊断（60 秒内称一次重）",
-                        Modifier.fillMaxWidth(), enabled = !bleProbing && s.loggedIn,
-                    ) { bleProbe() }
-                    SecondaryButton(
-                        if (bleProbing) "蓝牙诊断中…" else "蓝牙连接诊断（先强制停止米家 App）",
-                        Modifier.fillMaxWidth(), enabled = !bleProbing && s.loggedIn,
-                    ) { bleGattProbe() }
-                    PrimaryButton(
-                        if (bleProbing) "蓝牙诊断中…" else "米家蓝牙认证诊断（点后立即站上秤）",
-                        Modifier.fillMaxWidth(), enabled = !bleProbing && s.loggedIn,
-                    ) { bleAuthProbe() }
-                    if (s.scaleModel.isNotEmpty()) {
-                        SecondaryButton("重新探测型号", Modifier.fillMaxWidth()) {
-                            settings.scaleModel = ""
-                            settings.scaleProbeAt = 0L
-                            SyncScheduler.syncNow(this@MainActivity)
-                            refresh()
-                        }
-                    }
-                    Caption("写入：体重、体脂率、体内水分、骨量、去脂体重、基础代谢。新增类型需要在上方重新「授权写入」。")
-                }
-            }
+            ScaleSection(s)
 
             val logLines = s.log.lines().filter { it.isNotBlank() }
             Section("日志") {
-                // 模块一：最近一次同步，各类数据各自的结果
+                // 模块一：最近一次同步，各类数据各自的结果，默认折叠
                 val report = s.report
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("最近一次同步", Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Palette.Ink)
-                    if (report != null) Caption(fmt(report.atMillis))
-                }
-                if (report == null) {
-                    Caption("还没有同步记录。")
-                } else {
-                    Caption(reportSummary(report))
+                ExpandableHeader(
+                    title = "最近一次同步",
+                    summary = report?.let { fmtShort(it.atMillis / 1000) } ?: "暂无",
+                    expanded = reportExpanded,
+                    onToggle = { reportExpanded = !reportExpanded },
+                )
+                if (report != null) Caption(reportSummary(report))
+                if (reportExpanded && report != null) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         report.items.forEach { TypeResultRow(it) }
                     }
@@ -629,6 +568,125 @@ class MainActivity : ComponentActivity() {
                     FooterLink("开源许可") { LegalActivity.licenses(this@MainActivity) }
                 }
                 Caption("MiHealthBridge v$versionLabel", Palette.Faint)
+            }
+        }
+    }
+
+    /** 体脂秤检测：先申请蓝牙权限（拒绝也继续，只是跳过广播检测）。 */
+    private fun detectScale() {
+        if (detectPhase != null || bleProbing) return
+        val missing = blePermissions.filter {
+            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) startDetect() else {
+            pendingAfterPermission = { startDetect() }
+            blePermissionLauncher.launch(missing.toTypedArray())
+        }
+    }
+
+    private fun startDetect() {
+        detectPhase = "准备中…"
+        lifecycleScope.launch(Dispatchers.IO) {
+            val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
+            val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  [体脂秤检测] $it") }
+            val kind = runCatching {
+                ScaleSetup.detect(applicationContext, log) { p -> launch(Dispatchers.Main) { detectPhase = p } }
+            }.onFailure { log("检测失败：${it.javaClass.simpleName} ${it.message}") }.getOrNull()
+            launch(Dispatchers.Main) {
+                detectPhase = null
+                toast(if (kind != null) "检测完成：${ScaleSetup.kindLabel(kind)}" else "检测失败，详见日志")
+                refresh()
+            }
+        }
+    }
+
+    @Composable
+    private fun ScaleSection(s: UiState) {
+        val kind = s.scaleKind
+        val enabled = when (kind) {
+            ScaleSetup.Kind.BLE -> s.scaleBle
+            ScaleSetup.Kind.CLOUD -> s.scaleEnabled
+            else -> false
+        }
+        val status = when {
+            detectPhase != null -> Status.Warn
+            kind == ScaleSetup.Kind.BLE || kind == ScaleSetup.Kind.CLOUD ->
+                if (!enabled) Status.None
+                else if (kind == ScaleSetup.Kind.CLOUD && s.scaleMember.isEmpty() && s.scaleMembers.size > 1) Status.Warn
+                else Status.Ok
+            kind == ScaleSetup.Kind.UNSUPPORTED || kind == ScaleSetup.Kind.NONE -> Status.Warn
+            else -> Status.None
+        }
+        Section("体脂秤", status) {
+            val phase = detectPhase
+            if (phase != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(14.dp), color = Palette.Navy, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(phase, fontSize = 13.sp, color = Palette.Navy)
+                }
+            }
+            if (kind.isEmpty()) {
+                Caption("自动找到米家账号里的体脂秤，识别型号、检测蓝牙广播，并选择合适的同步方式。检测时请把秤放在手机旁边，按提示踩一下秤。")
+                PrimaryButton("检测体脂秤", Modifier.fillMaxWidth(), enabled = phase == null && s.loggedIn) { detectScale() }
+                if (!s.loggedIn) Caption("请先登录小米账号。")
+            } else {
+                if (s.scaleName.isNotEmpty()) StatRow("名称", s.scaleName)
+                if (s.scaleModel.isNotEmpty()) StatRow("型号", s.scaleModel)
+                StatRow("同步方式", ScaleSetup.kindLabel(kind))
+                if (s.scaleBroadcast.isNotEmpty()) StatRow("蓝牙广播", s.scaleBroadcast)
+
+                when (kind) {
+                    ScaleSetup.Kind.BLE, ScaleSetup.Kind.CLOUD -> {
+                        Segmented(options = listOf(false to "停用", true to "启用"), selected = enabled) { on ->
+                            if (kind == ScaleSetup.Kind.BLE) setScaleBle(on)
+                            else {
+                                settings.scaleEnabled = on
+                                if (on) SyncScheduler.syncNow(this@MainActivity, full = true)
+                                refresh()
+                            }
+                        }
+                    }
+                }
+                if (kind == ScaleSetup.Kind.BLE && enabled) {
+                    StatRow("最近一次", s.scaleBleResult.ifEmpty { "还没有称重记录" })
+                    Caption("称重时手机需在秤附近并开着蓝牙，站到读数稳定即可，无需打开本应用。由本应用读取的称重不会出现在米家 App 里。")
+                }
+                if (kind == ScaleSetup.Kind.CLOUD && enabled) {
+                    Caption("称重记录随「同步」定时拉取，写入体重、体脂率、体内水分、骨量、去脂体重、基础代谢。")
+                    if (s.scaleMembers.isNotEmpty()) {
+                        FieldLabel("只同步这位成员")
+                        Segmented(
+                            options = listOf("" to "自动") + s.scaleMembers.map { it to it },
+                            selected = s.scaleMember,
+                        ) { m ->
+                            settings.scaleMember = m
+                            SyncScheduler.syncNow(this@MainActivity, full = true)
+                            refresh()
+                        }
+                        if (s.scaleMembers.size > 1 && s.scaleMember.isEmpty()) {
+                            Caption("秤上有多位家庭成员，请选择你自己，否则不会写入任何称重数据。", Palette.Red)
+                        }
+                    }
+                }
+                if (kind == ScaleSetup.Kind.UNSUPPORTED) Caption("这台秤暂不支持。可展开下方「诊断工具」收集数据后反馈给开发者。", Palette.Red)
+                if (kind == ScaleSetup.Kind.NONE) Caption("米家账号里没有找到体脂秤。绑定在小米运动健康的秤，体重会随「同步」自动写入。")
+                SecondaryButton("重新检测", Modifier.fillMaxWidth(), enabled = phase == null && s.loggedIn) { detectScale() }
+            }
+
+            ExpandableHeader(
+                title = "诊断工具",
+                summary = "适配新型号时使用",
+                expanded = scaleDiagExpanded,
+                onToggle = { scaleDiagExpanded = !scaleDiagExpanded },
+            )
+            if (scaleDiagExpanded) {
+                Caption("诊断会主动连接秤，请先在上方停用体脂秤同步，避免抢连接。结果写进「详细日志」。")
+                val busy = bleProbing || diagnosing || phase != null
+                SecondaryButton(if (diagnosing) "诊断中…" else "云端诊断（查找秤并检查云端数据）", Modifier.fillMaxWidth(), enabled = !busy && s.loggedIn) { diagnoseScale() }
+                SecondaryButton("蓝牙广播诊断（60 秒内称一次重）", Modifier.fillMaxWidth(), enabled = !busy && s.loggedIn) { bleProbe() }
+                SecondaryButton("蓝牙连接诊断（不认证）", Modifier.fillMaxWidth(), enabled = !busy && s.loggedIn) { bleGattProbe() }
+                SecondaryButton("米家蓝牙认证诊断（点后立即站上秤）", Modifier.fillMaxWidth(), enabled = !busy && s.loggedIn) { bleAuthProbe() }
             }
         }
     }
