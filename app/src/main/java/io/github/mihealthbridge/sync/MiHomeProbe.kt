@@ -112,25 +112,36 @@ class MiHomeProbe(context: Context) {
         val healthSession = health.login(settings.userId!!, settings.passToken!!)
         settings.passToken = healthSession.passToken
         settings.session = healthSession
-        val since30d = System.currentTimeMillis() / 1000 - 30 * 86_400L
+        val since90d = System.currentTimeMillis() / 1000 - 90 * 86_400L
         var usable: String? = null
 
         for (d in scales) {
             log("秤：${d.name} | model=${d.model} | spec=${d.specType ?: "无"}")
 
-            // 1) 体脂秤专用接口：米家云直连、小米运动健康代理各试一次
-            for (direct in listOf(true, false)) {
-                val tag = if (direct) "体脂秤接口·米家云" else "体脂秤接口·运动健康代理"
+            // 1) 体脂秤专用接口：米家云直连 / 小米运动健康代理 × 不带 / 带设备 ID，外加米家通用称重接口
+            val now = System.currentTimeMillis()
+            val attempts: List<Pair<String, () -> JSONArray>> = listOf(
+                "体脂秤接口·米家云" to { home.fetchScalePage(hs, d.model, now, true) },
+                "体脂秤接口·米家云·带设备ID" to { home.fetchScalePage(hs, d.model, now, true, did = d.did) },
+                "体脂秤接口·运动健康代理" to { health.fetchScalePage(healthSession, d.model, now, false) },
+                "体脂秤接口·运动健康代理·带设备ID" to { health.fetchScalePage(healthSession, d.model, now, false, did = d.did) },
+                "通用称重接口·米家云" to { home.fetchCommonScalePage(hs, d.model, now, d.did) },
+            )
+            for ((tag, fetchRaw) in attempts) {
+                val direct = !tag.contains("运动健康")
                 try {
-                    val raw = if (direct) home.fetchScalePage(hs, d.model, System.currentTimeMillis(), true)
-                    else health.fetchScalePage(healthSession, d.model, System.currentTimeMillis(), false)
+                    val raw = fetchRaw()
                     val list = MiScaleParser.parsePage(raw).first
                     log("  [$tag] 原始 ${raw.length()} 条，解析出 ${list.size} 条")
                     raw.optJSONObject(0)?.let { log("    原始示例：${it.toString().take(800)}") }
                     list.firstOrNull()?.let { log("    解析示例：$it") }
-                    if (list.isNotEmpty() && usable == null) {
+                    // 同步流程目前只支持前两种基础入口；其他入口有数据时提示适配
+                    val supported = "设备ID" !in tag && "通用" !in tag
+                    if (list.isNotEmpty() && usable == null && supported) {
                         usable = d.model
                         settings.scaleDirect = direct
+                    } else if (raw.length() > 0 && !supported) {
+                        log("    ↑ 这个入口有数据，同步流程还没接入，请把日志发给开发者")
                     }
                 } catch (e: Exception) {
                     log("  [$tag] 失败：${e.message ?: e.javaClass.simpleName}")
@@ -145,17 +156,22 @@ class MiHomeProbe(context: Context) {
                 emptyList()
             }
             if (keys.isNotEmpty()) log("  设备规范共 ${keys.size} 项属性/事件")
-            val guesses = listOf(
-                Triple("weight", "prop", "旧版字段 weight"),
-                Triple("weight", "event", "旧版事件 weight"),
-                Triple("4100", "prop", "BLE 体重 0x1004"),
-                Triple("19992", "prop", "BLE 体脂秤 0x4E18"),
-            )
+            // 规范里没定义属性/事件时，按服务编号猜键名（体脂秤服务 2、BLE 自定义服务 4）
+            val guesses = buildList {
+                add(Triple("weight", "prop", "旧版字段 weight"))
+                add(Triple("weight", "event", "旧版事件 weight"))
+                add(Triple("4100", "prop", "BLE 体重 0x1004"))
+                add(Triple("19992", "prop", "BLE 体脂秤 0x4E18"))
+                for (siid in listOf(2, 4)) {
+                    for (i in 1..6) add(Triple("event.$siid.$i", "event", "猜测事件"))
+                    for (i in 1..8) add(Triple("prop.$siid.$i", "prop", "猜测属性"))
+                }
+            }
             var hits = 0
             var errors = 0
-            for ((key, type, desc) in (keys + guesses).take(60)) {
+            for ((key, type, desc) in (keys + guesses).distinctBy { it.first + it.second }.take(80)) {
                 val rows = try {
-                    deviceData(hs, d.did, key, type, since30d, 3)
+                    deviceData(hs, d.did, key, type, since90d, 3)
                 } catch (e: Exception) {
                     if (errors++ == 0) log("  [设备历史] $type $key 查询失败：${e.message ?: e.javaClass.simpleName}")
                     continue
@@ -165,7 +181,7 @@ class MiHomeProbe(context: Context) {
                 log("  [设备历史] $type $key（$desc）${rows.length()} 条，最新：${rows.optJSONObject(0)?.toString()?.take(400)}")
                 Thread.sleep(150)
             }
-            if (hits == 0) log("  [设备历史] 最近 30 天没有查到任何记录（$errors 项查询失败）")
+            if (hits == 0) log("  [设备历史] 最近 90 天没有查到任何记录（$errors 项查询失败）")
         }
         log("—— 诊断结束：请点「复制全部日志」发给开发者 ——")
         return usable

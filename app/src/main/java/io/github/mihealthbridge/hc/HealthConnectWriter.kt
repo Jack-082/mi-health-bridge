@@ -22,6 +22,7 @@ import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.time.TimeRangeFilter
 import java.time.Instant
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.reflect.KClass
 
 class HealthConnectWriter(context: Context) {
@@ -54,6 +55,8 @@ class HealthConnectWriter(context: Context) {
             if (HealthPermission.getWritePermission(r.type) !in granted) continue
             try {
                 client.deleteRecords(r.type, TimeRangeFilter.between(r.start, r.end))
+            } catch (e: CancellationException) {
+                throw e // 任务被取消：交给协程框架，不当作数据错误
             } catch (e: Exception) {
                 log("清理旧 ${r.type.simpleName} 失败：${e.message}")
             }
@@ -66,12 +69,16 @@ class HealthConnectWriter(context: Context) {
             try {
                 client.insertRecords(chunk)
                 chunk.forEach { r -> tally(r).let { it.written = it.written + 1 } }
+            } catch (e: CancellationException) {
+                throw e // 任务被取消：交给协程框架，不当作数据错误
             } catch (e: Exception) {
                 Log.w(TAG, "batch insert failed, retry one by one", e)
                 for (r in chunk) {
                     try {
                         client.insertRecords(listOf(r))
                         tally(r).let { it.written = it.written + 1 }
+                    } catch (e: CancellationException) {
+                        throw e // 任务被取消：交给协程框架，不当作数据错误
                     } catch (e2: Exception) {
                         tally(r).let { it.failed = it.failed + 1 }
                         log("写入失败 ${r::class.simpleName} ${r.metadata.clientRecordId}: ${e2.message}")

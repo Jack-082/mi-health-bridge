@@ -79,6 +79,11 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("scaleDirect", true)
         set(v) = prefs.edit().putBoolean("scaleDirect", v).apply()
 
+    /** 米家体脂秤上次成功拉取并写入的时刻（独立于全局同步窗口）。 */
+    var scaleLastSuccessMillis: Long
+        get() = prefs.getLong("scaleLastSuccess", 0L)
+        set(v) = prefs.edit().putLong("scaleLastSuccess", v).apply()
+
     /** 上次探测型号的时刻；没探测到时每 6 小时最多重试一次。 */
     var scaleProbeAt: Long
         get() = prefs.getLong("scaleProbeAt", 0L)

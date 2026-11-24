@@ -59,7 +59,7 @@ object SyncScheduler {
 
     /**
      * 立即同步。[full] = true 时忽略上次同步时间，按“回溯天数”重新拉取并覆盖。
-     * 全量任务会替换排队中的手动任务；普通同步不会顶掉已在排队的全量任务。
+     * 全量任务追加在当前手动任务之后；普通同步不会顶掉已在排队的全量任务。
      */
     fun syncNow(context: Context, full: Boolean = false) {
         val req = OneTimeWorkRequestBuilder<SyncWorker>()
@@ -68,7 +68,8 @@ object SyncScheduler {
             .addTag(TAG_MANUAL)
             .apply { if (full) addTag(TAG_FULL) }
             .build()
-        val policy = if (full) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
+        // 全量任务排在正在运行的同步之后，不取消它（取消会让进行中的写入全部中断）
+        val policy = if (full) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.KEEP
         WorkManager.getInstance(context).enqueueUniqueWork(NOW, policy, req)
     }
 

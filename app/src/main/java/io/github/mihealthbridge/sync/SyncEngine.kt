@@ -30,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.reflect.KClass
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -63,6 +64,8 @@ class SyncEngine(private val context: Context) {
         withContext(Dispatchers.IO) {
             val outcome = try {
                 doSync(full)
+            } catch (e: CancellationException) {
+                throw e // 任务被取消：交给协程框架，不当作数据错误
             } catch (e: Exception) {
                 SyncOutcome.Failed(e)
             }
@@ -101,7 +104,7 @@ class SyncEngine(private val context: Context) {
             .atStartOfDay(zone).toEpochSecond()
         val endSec = nowSec + 3600
 
-        val (records, replace, fetchErrors) = try {
+        val fetched = try {
             fetchAll(sessionOrLogin(), startSec, endSec, nowMs)
         } catch (e: MiAuthException) {
             // 会话过期：用 passToken 重新换一次会话再试
@@ -115,11 +118,17 @@ class SyncEngine(private val context: Context) {
             }
         }
 
-        val result = HealthConnectWriter(context).write(records, replace) { log(it) }
+        val result = HealthConnectWriter(context).write(fetched.records, fetched.replace) { log(it) }
         settings.needsRelogin = false
-        settings.lastReport = buildReport(nowMs, startSec, endSec, fetchErrors, result).toJson()
+        settings.lastReport = buildReport(nowMs, startSec, endSec, fetched.fetchErrors, result).toJson()
         // 有数据项拉取失败时不推进窗口，下次会重拉（重复写入由 clientRecordId 去重）
-        if (fetchErrors.isEmpty()) settings.lastSuccessMillis = nowMs else log("${fetchErrors.size} 类数据拉取失败，保留同步窗口")
+        if (fetched.windowErrors == 0) settings.lastSuccessMillis = nowMs
+        else log("${fetched.windowErrors} 项数据拉取失败，保留同步窗口")
+        // 米家体脂秤：拉取成功、体重已授权且没有写入失败，才推进它自己的窗口
+        if (fetched.scaleOk &&
+            HealthPermission.getWritePermission(WeightRecord::class) in result.granted &&
+            BODY_TYPES.none { (result.counts[it]?.failed ?: 0) > 0 }
+        ) settings.scaleLastSuccessMillis = nowMs
         return SyncOutcome.Success(result.written)
     }
 
@@ -166,6 +175,10 @@ class SyncEngine(private val context: Context) {
         val replace: List<HealthConnectWriter.Replace>,
         /** 拉取失败的数据类型 → 错误信息。 */
         val fetchErrors: Map<KClass<out Record>, String>,
+        /** 会阻止推进同步窗口的失败步数（米家体脂秤有独立窗口，不计入）。 */
+        val windowErrors: Int,
+        /** 米家体脂秤这次拉取成功。 */
+        val scaleOk: Boolean,
     )
 
     private fun fetchAll(s: MiSession, start: Long, end: Long, nowMs: Long): Fetched {
@@ -173,18 +186,27 @@ class SyncEngine(private val context: Context) {
         val out = ArrayList<Record>()
         val replace = ArrayList<HealthConnectWriter.Replace>()
         val fetchErrors = HashMap<KClass<out Record>, String>()
-        /** [types]：这一步会产出的记录类型，拉取失败时它们都记为失败。 */
-        fun step(name: String, types: List<KClass<out Record>>, block: () -> List<Record>) {
+        var windowErrors = 0
+        /**
+         * [types]：这一步会产出的记录类型，拉取失败时它们都记为失败。
+         * [holdsWindow]：失败时是否保留全局同步窗口。返回是否成功。
+         */
+        fun step(name: String, types: List<KClass<out Record>>, holdsWindow: Boolean = true, block: () -> List<Record>): Boolean {
             try {
                 val r = block()
                 out += r
                 log("$name: ${r.size} 条")
+                return true
             } catch (e: MiAuthException) {
                 throw e
+            } catch (e: CancellationException) {
+                throw e // 任务被取消：交给协程框架，不当作数据错误
             } catch (e: Exception) {
                 val msg = e.message ?: e.javaClass.simpleName
                 types.forEach { fetchErrors[it] = msg }
+                if (holdsWindow) windowErrors++
                 log("$name 拉取失败：$msg") // 单项失败不影响其他数据
+                return false
             }
         }
         step("步数/距离/热量", listOf(StepsRecord::class, DistanceRecord::class, ActiveCaloriesBurnedRecord::class)) {
@@ -213,17 +235,18 @@ class SyncEngine(private val context: Context) {
             records
         }
         step("运动", listOf(ExerciseSessionRecord::class)) { mapper.workouts(cloud.fetchSportRecords(s, start - 86_400, end)) }
-        val bodyTypes = listOf(
-            WeightRecord::class, BodyFatRecord::class, BodyWaterMassRecord::class,
-            BoneMassRecord::class, LeanBodyMassRecord::class, BasalMetabolicRateRecord::class,
-        )
+        val bodyTypes = BODY_TYPES
         step("体重（小米运动健康）", bodyTypes) {
             mapper.weighIns(cloud.fetchData(s, "weight", start, end).mapNotNull(MiScaleParser::fromFitnessItem))
         }
-        if (settings.scaleEnabled) {
-            step("米家体脂秤", bodyTypes) { mapper.weighIns(fetchMijiaScale(s, start)) }
+        // 米家体脂秤用独立窗口：从上次成功拉取前 2 天起；从未成功过则按回溯天数
+        val scaleOk = settings.scaleEnabled && step("米家体脂秤", bodyTypes, holdsWindow = false) {
+            val last = settings.scaleLastSuccessMillis
+            val from = if (last > 0) minOf(start, last / 1000 - 2 * 86_400L)
+            else minOf(start, nowMs / 1000 - settings.initialDays * 86_400L)
+            mapper.weighIns(fetchMijiaScale(s, from))
         }
-        return Fetched(out, replace, fetchErrors)
+        return Fetched(out, replace, fetchErrors, windowErrors, scaleOk)
     }
 
     /**
@@ -261,6 +284,8 @@ class SyncEngine(private val context: Context) {
                 probe.scales(probe.listDevices(home())).map { it.model }.also {
                     log("米家账号中的体脂秤型号：${it.ifEmpty { listOf("无") }.joinToString()}")
                 }
+            } catch (e: CancellationException) {
+                throw e // 任务被取消：交给协程框架，不当作数据错误
             } catch (e: Exception) {
                 log("读取米家设备列表失败：${e.message ?: e.javaClass.simpleName}")
                 emptyList()
@@ -271,6 +296,8 @@ class SyncEngine(private val context: Context) {
                         fetch(m, direct, Long.MAX_VALUE) // 只看第一页
                     } catch (e: MiAuthException) {
                         throw e
+                    } catch (e: CancellationException) {
+                        throw e // 任务被取消：交给协程框架，不当作数据错误
                     } catch (e: Exception) {
                         log("探测 $m（${if (direct) "米家云" else "运动健康代理"}）：${e.message ?: e.javaClass.simpleName}")
                         emptyList()
@@ -318,5 +345,9 @@ class SyncEngine(private val context: Context) {
 
     companion object {
         private val lock = Mutex()
+        private val BODY_TYPES = listOf(
+            WeightRecord::class, BodyFatRecord::class, BodyWaterMassRecord::class,
+            BoneMassRecord::class, LeanBodyMassRecord::class, BasalMetabolicRateRecord::class,
+        )
     }
 }
