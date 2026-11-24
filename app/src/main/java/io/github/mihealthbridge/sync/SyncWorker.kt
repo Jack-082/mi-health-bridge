@@ -12,6 +12,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.first
 
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
@@ -65,10 +66,10 @@ object SyncScheduler {
         }
     }
 
-    /** App 启动时调用：快速模式已开启但任务链丢失时才重新排队（阻塞调用，需在后台线程）。 */
-    fun ensureFastBlocking(context: Context) {
+    /** App 启动时调用：快速模式已开启但任务链丢失时才重新排队。 */
+    suspend fun ensureFast(context: Context) {
         if (Settings(context).fastIntervalMinutes <= 0) return
-        val alive = WorkManager.getInstance(context).getWorkInfosForUniqueWork(FAST).get()
+        val alive = WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(FAST).first()
             .any { !it.state.isFinished }
         if (!alive) enqueueFast(context, 0)
     }

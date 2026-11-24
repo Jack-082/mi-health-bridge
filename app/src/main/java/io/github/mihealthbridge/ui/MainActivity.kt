@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
         SyncScheduler.ensurePeriodic(this)
-        lifecycleScope.launch(Dispatchers.IO) { runCatching { SyncScheduler.ensureFastBlocking(applicationContext) } }
+        lifecycleScope.launch(Dispatchers.IO) { runCatching { SyncScheduler.ensureFast(applicationContext) } }
         setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { Screen() } } }
     }
 
