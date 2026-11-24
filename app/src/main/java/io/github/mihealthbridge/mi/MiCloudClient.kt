@@ -46,7 +46,12 @@ data class MiItem(
  * 小米运动健康（com.mi.health）云端非官方接口客户端。
  * 中国大陆账号使用 https://hlth.io.mi.com。
  */
-class MiCloudClient(private val baseUrl: String = CN_BASE_URL) {
+class MiCloudClient(
+    private val baseUrl: String = CN_BASE_URL,
+    /** 服务 ID：小米运动健康为 miothealth，米家为 xiaomiio。 */
+    private val sid: String = "miothealth",
+    private val extraHeaders: Map<String, String> = emptyMap(),
+) {
 
     private val http = OkHttpClient.Builder()
         .followRedirects(false) // 需要读取 location 响应自身的 Set-Cookie
@@ -55,10 +60,10 @@ class MiCloudClient(private val baseUrl: String = CN_BASE_URL) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    /** 用账号 Cookie（userId + passToken）换取 miothealth 服务会话。 */
+    /** 用账号 Cookie（userId + passToken）换取 [sid] 服务会话。 */
     fun login(userId: String, passToken: String): MiSession {
         val req = Request.Builder()
-            .url("https://account.xiaomi.com/pass/serviceLogin?_json=true&sid=miothealth")
+            .url("https://account.xiaomi.com/pass/serviceLogin?_json=true&sid=$sid")
             .header("Cookie", "userId=$userId; passToken=$passToken")
             .build()
         val text = http.newCall(req).execute().use { resp ->
@@ -148,6 +153,9 @@ class MiCloudClient(private val baseUrl: String = CN_BASE_URL) {
         throw IOException("分页超过上限")
     }
 
+    /** 通用签名请求，返回响应中的 result 对象。 */
+    fun call(session: MiSession, path: String, data: String): JSONObject = request(session, path, data)
+
     private fun request(session: MiSession, path: String, data: String): JSONObject {
         var last: Exception? = null
         for (attempt in 0..2) {
@@ -170,6 +178,7 @@ class MiCloudClient(private val baseUrl: String = CN_BASE_URL) {
         val req = Request.Builder()
             .url(baseUrl + path)
             .header("Cookie", session.cookies)
+            .apply { extraHeaders.forEach { (k, v) -> header(k, v) } }
             .post(form)
             .build()
         val body = http.newCall(req).execute().use { resp ->
@@ -189,7 +198,11 @@ class MiCloudClient(private val baseUrl: String = CN_BASE_URL) {
         val code = obj.optInt("code", -1)
         if (code == AUTH_ERROR_CODE) throw MiAuthException("会话失效 code=$code")
         if (code != 0) throw MiApiException(code, obj.optString("message"))
-        return obj.optJSONObject("result") ?: JSONObject()
+        return when (val r = obj.opt("result")) {
+            is JSONObject -> r
+            is JSONArray -> JSONObject().put("list", r) // 米家部分接口直接返回数组
+            else -> JSONObject()
+        }
     }
 
     companion object {

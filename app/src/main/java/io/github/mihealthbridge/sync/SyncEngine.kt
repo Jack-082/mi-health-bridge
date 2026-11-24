@@ -238,7 +238,17 @@ class SyncEngine(private val context: Context) {
                 throw IOException("尚未找到米家体脂秤，6 小时内不再重复探测")
             }
             settings.scaleProbeAt = now
-            for (m in MiScaleParser.CANDIDATE_MODELS) {
+            // 优先用米家账号里真实绑定的秤的型号，再试已知型号
+            val accountModels = try {
+                val probe = MiHomeProbe(context)
+                probe.scales(probe.listDevices(probe.login())).map { it.model }.also {
+                    log("米家账号中的体脂秤型号：${it.ifEmpty { listOf("无") }.joinToString()}")
+                }
+            } catch (e: Exception) {
+                log("读取米家设备列表失败：${e.message ?: e.javaClass.simpleName}")
+                emptyList()
+            }
+            for (m in (accountModels + MiScaleParser.CANDIDATE_MODELS).distinct()) {
                 val found = try {
                     cloud.fetchScaleData(s, m, Long.MAX_VALUE)
                 } catch (e: MiAuthException) {

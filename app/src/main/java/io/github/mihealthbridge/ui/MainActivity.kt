@@ -59,6 +59,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkQuery
 import io.github.mihealthbridge.hc.HealthConnectWriter
+import io.github.mihealthbridge.sync.MiHomeProbe
 import io.github.mihealthbridge.sync.Settings
 import io.github.mihealthbridge.sync.SyncReport
 import io.github.mihealthbridge.sync.SyncScheduler
@@ -105,6 +106,7 @@ class MainActivity : ComponentActivity() {
     private var batteryIgnored by mutableStateOf(false)
     private var logExpanded by mutableStateOf(false)
     private var showDisclaimer by mutableStateOf(false)
+    private var diagnosing by mutableStateOf(false)
 
     private val permissionLauncher =
         registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { refresh() }
@@ -176,6 +178,26 @@ class MainActivity : ComponentActivity() {
     )
 
     private fun openLogin() = loginLauncher.launch(Intent(this, LoginActivity::class.java))
+
+    /** 诊断米家体脂秤：结果写进详细日志，供用户复制反馈。 */
+    private fun diagnoseScale() {
+        if (diagnosing) return
+        diagnosing = true
+        toast("正在诊断米家体脂秤…")
+        lifecycleScope.launch(Dispatchers.IO) {
+            val fmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA)
+            val log: (String) -> Unit = { settings.appendLog("${fmt.format(Date())}  $it") }
+            runCatching { MiHomeProbe(applicationContext).diagnose(log) }
+                .onSuccess { model -> if (model != null) settings.scaleModel = model }
+                .onFailure { log("诊断失败：${it.javaClass.simpleName} ${it.message}") }
+            launch(Dispatchers.Main) {
+                diagnosing = false
+                logExpanded = true
+                toast("诊断完成，结果在「详细日志」里")
+                refresh()
+            }
+        }
+    }
 
     private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
 
@@ -397,6 +419,10 @@ class MainActivity : ComponentActivity() {
                             if (s.scaleMembers.size > 1 && s.scaleMember.isEmpty()) Palette.Red else Palette.Muted,
                         )
                     }
+                    SecondaryButton(
+                        if (diagnosing) "诊断中…" else "诊断（查找秤并检查能读到的数据）",
+                        Modifier.fillMaxWidth(), enabled = !diagnosing && s.loggedIn,
+                    ) { diagnoseScale() }
                     if (s.scaleModel.isNotEmpty()) {
                         SecondaryButton("重新探测型号", Modifier.fillMaxWidth()) {
                             settings.scaleModel = ""
