@@ -2,9 +2,19 @@ package io.github.mihealthbridge.sync
 
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
+import androidx.health.connect.client.records.BodyFatRecord
+import androidx.health.connect.client.records.DistanceRecord
+import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RespiratoryRateRecord
+import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
+import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.records.WeightRecord
 import io.github.mihealthbridge.hc.HealthConnectWriter
 import io.github.mihealthbridge.hc.RecordMapper
 import io.github.mihealthbridge.mi.MiAuthException
@@ -14,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.reflect.KClass
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.ZoneId
@@ -50,6 +61,16 @@ class SyncEngine(private val context: Context) {
             }
             settings.lastResult = describe(outcome)
             log(settings.lastResult)
+            if (outcome !is SyncOutcome.Success) {
+                // 整次同步没有完成：所有类型都标为失败，并给出原因
+                val reason = settings.lastResult
+                settings.lastReport = SyncReport(
+                    atMillis = System.currentTimeMillis(), windowStartSec = 0, windowEndSec = 0,
+                    items = HealthConnectWriter.RECORD_TYPES.map {
+                        SyncReport.TypeResult(label(it), SyncReport.State.Failed, reason = reason)
+                    },
+                ).toJson()
+            }
             outcome
         }
     }
@@ -73,7 +94,7 @@ class SyncEngine(private val context: Context) {
             .atStartOfDay(zone).toEpochSecond()
         val endSec = nowSec + 3600
 
-        val (records, replace, failures) = try {
+        val (records, replace, fetchErrors) = try {
             fetchAll(sessionOrLogin(), startSec, endSec, nowMs)
         } catch (e: MiAuthException) {
             // 会话过期：用 passToken 重新换一次会话再试
@@ -87,12 +108,42 @@ class SyncEngine(private val context: Context) {
             }
         }
 
-        val written = HealthConnectWriter(context).write(records, replace) { log(it) }
+        val result = HealthConnectWriter(context).write(records, replace) { log(it) }
         settings.needsRelogin = false
+        settings.lastReport = buildReport(nowMs, startSec, endSec, fetchErrors, result).toJson()
         // 有数据项拉取失败时不推进窗口，下次会重拉（重复写入由 clientRecordId 去重）
-        if (failures == 0) settings.lastSuccessMillis = nowMs else log("$failures 项拉取失败，保留同步窗口")
-        return SyncOutcome.Success(written)
+        if (fetchErrors.isEmpty()) settings.lastSuccessMillis = nowMs else log("${fetchErrors.size} 类数据拉取失败，保留同步窗口")
+        return SyncOutcome.Success(result.written)
     }
+
+    private fun label(type: KClass<out Record>) = HealthConnectWriter.LABELS[type] ?: type.simpleName.orEmpty()
+
+    /** 按 11 类数据汇总：未授权 > 拉取失败 > 写入结果 > 无数据。 */
+    private fun buildReport(
+        nowMs: Long, startSec: Long, endSec: Long,
+        fetchErrors: Map<KClass<out Record>, String>,
+        result: HealthConnectWriter.WriteResult,
+    ) = SyncReport(
+        atMillis = nowMs, windowStartSec = startSec, windowEndSec = endSec,
+        items = HealthConnectWriter.RECORD_TYPES.map { type ->
+            val name = label(type)
+            val c = result.counts[type]
+            val fetchError = fetchErrors[type]
+            when {
+                HealthPermission.getWritePermission(type) !in result.granted ->
+                    SyncReport.TypeResult(name, SyncReport.State.Unauthorized, reason = "未授予 Health Connect 写入权限")
+                fetchError != null ->
+                    SyncReport.TypeResult(name, SyncReport.State.Failed, reason = "拉取失败：$fetchError")
+                c == null || (c.written == 0 && c.failed == 0) ->
+                    SyncReport.TypeResult(name, SyncReport.State.NoData)
+                c.failed > 0 && c.written == 0 ->
+                    SyncReport.TypeResult(name, SyncReport.State.Failed, failed = c.failed, reason = "写入失败 ${c.failed} 条，详见日志")
+                c.failed > 0 ->
+                    SyncReport.TypeResult(name, SyncReport.State.Partial, c.written, c.failed, "写入失败 ${c.failed} 条，详见日志")
+                else -> SyncReport.TypeResult(name, SyncReport.State.Synced, c.written)
+            }
+        },
+    )
 
     private fun sessionOrLogin(): MiSession {
         settings.session?.let { return it }
@@ -103,14 +154,20 @@ class SyncEngine(private val context: Context) {
         return session
     }
 
-    private data class Fetched(val records: List<Record>, val replace: List<HealthConnectWriter.Replace>, val failures: Int)
+    private data class Fetched(
+        val records: List<Record>,
+        val replace: List<HealthConnectWriter.Replace>,
+        /** 拉取失败的数据类型 → 错误信息。 */
+        val fetchErrors: Map<KClass<out Record>, String>,
+    )
 
     private fun fetchAll(s: MiSession, start: Long, end: Long, nowMs: Long): Fetched {
         val mapper = RecordMapper(nowMillis = nowMs)
         val out = ArrayList<Record>()
         val replace = ArrayList<HealthConnectWriter.Replace>()
-        var failures = 0
-        fun step(name: String, block: () -> List<Record>) {
+        val fetchErrors = HashMap<KClass<out Record>, String>()
+        /** [types]：这一步会产出的记录类型，拉取失败时它们都记为失败。 */
+        fun step(name: String, types: List<KClass<out Record>>, block: () -> List<Record>) {
             try {
                 val r = block()
                 out += r
@@ -118,17 +175,18 @@ class SyncEngine(private val context: Context) {
             } catch (e: MiAuthException) {
                 throw e
             } catch (e: Exception) {
-                failures++
-                log("$name 拉取失败：${e.message}") // 单项失败不影响其他数据
+                val msg = e.message ?: e.javaClass.simpleName
+                types.forEach { fetchErrors[it] = msg }
+                log("$name 拉取失败：$msg") // 单项失败不影响其他数据
             }
         }
-        step("步数/距离/热量") {
+        step("步数/距离/热量", listOf(StepsRecord::class, DistanceRecord::class, ActiveCaloriesBurnedRecord::class)) {
             mapper.dailyActivity(cloud.fetchData(s, "steps", start, end), cloud.fetchData(s, "calories", start, end))
         }
-        step("心率") { mapper.heartRate(cloud.fetchData(s, "heart_rate", start, end)) }
-        step("静息心率") { mapper.restingHeartRate(cloud.fetchData(s, "resting_heart_rate", start, end)) }
-        step("血氧") { mapper.spo2(cloud.fetchData(s, "spo2", start, end)) }
-        step("睡眠") {
+        step("心率", listOf(HeartRateRecord::class)) { mapper.heartRate(cloud.fetchData(s, "heart_rate", start, end)) }
+        step("静息心率", listOf(RestingHeartRateRecord::class)) { mapper.restingHeartRate(cloud.fetchData(s, "resting_heart_rate", start, end)) }
+        step("血氧", listOf(OxygenSaturationRecord::class)) { mapper.spo2(cloud.fetchData(s, "spo2", start, end)) }
+        step("睡眠", listOf(SleepSessionRecord::class, RespiratoryRateRecord::class)) {
             // 前一晚的入睡时间通常早于 start（当天零点），因此清理从前一天开始；
             // 拉取再多回看一天，保证清理范围内的每一晚都能重新拉到，不会误删。
             val replaceFrom = start - 86_400
@@ -147,9 +205,9 @@ class SyncEngine(private val context: Context) {
             }
             records
         }
-        step("运动") { mapper.workouts(cloud.fetchSportRecords(s, start - 86_400, end)) }
-        step("体重") { mapper.body(cloud.fetchData(s, "weight", start, end)) }
-        return Fetched(out, replace, failures)
+        step("运动", listOf(ExerciseSessionRecord::class)) { mapper.workouts(cloud.fetchSportRecords(s, start - 86_400, end)) }
+        step("体重", listOf(WeightRecord::class, BodyFatRecord::class)) { mapper.body(cloud.fetchData(s, "weight", start, end)) }
+        return Fetched(out, replace, fetchErrors)
     }
 
     private fun describe(o: SyncOutcome): String = when (o) {

@@ -29,13 +29,23 @@ class HealthConnectWriter(context: Context) {
     /** 写入前先删除本应用在 [start, end) 内写过的 [type] 记录（Health Connect 只删除调用方自己的数据）。 */
     data class Replace(val type: KClass<out Record>, val start: Instant, val end: Instant)
 
+    /** 某一类记录的写入结果。 */
+    data class TypeCount(var written: Int = 0, var failed: Int = 0)
+
+    /** 一次写入的结果：各类型计数 + 当时已授权的写入权限。 */
+    class WriteResult(val counts: Map<KClass<out Record>, TypeCount>, val granted: Set<String>) {
+        val written: Int get() = counts.values.sumOf { it.written }
+    }
+
     /**
      * 写入记录：只写已授权的类型；整批失败时退回逐条写入，避免一条脏数据拖垮整批。
      * [replace] 中的时间段会先清空再写入，用于清理 ID 变化后残留的旧记录。
-     * @return 成功写入（或更新）的条数
      */
-    suspend fun write(records: List<Record>, replace: List<Replace> = emptyList(), log: (String) -> Unit): Int {
+    suspend fun write(records: List<Record>, replace: List<Replace> = emptyList(), log: (String) -> Unit): WriteResult {
         val granted = grantedPermissions()
+        val counts = HashMap<KClass<out Record>, TypeCount>()
+        fun tally(r: Record) = counts.getOrPut(r::class) { TypeCount() }
+
         for (r in replace) {
             if (HealthPermission.getWritePermission(r.type) !in granted) continue
             try {
@@ -44,29 +54,28 @@ class HealthConnectWriter(context: Context) {
                 log("清理旧 ${r.type.simpleName} 失败：${e.message}")
             }
         }
-        if (records.isEmpty()) return 0
         val allowed = records.filter { HealthPermission.getWritePermission(it::class) in granted }
         val skipped = records.size - allowed.size
         if (skipped > 0) log("跳过 $skipped 条未授权类型的记录")
 
-        var ok = 0
         for (chunk in allowed.chunked(CHUNK)) {
             try {
                 client.insertRecords(chunk)
-                ok += chunk.size
+                chunk.forEach { r -> tally(r).let { it.written = it.written + 1 } }
             } catch (e: Exception) {
                 Log.w(TAG, "batch insert failed, retry one by one", e)
                 for (r in chunk) {
                     try {
                         client.insertRecords(listOf(r))
-                        ok++
+                        tally(r).let { it.written = it.written + 1 }
                     } catch (e2: Exception) {
+                        tally(r).let { it.failed = it.failed + 1 }
                         log("写入失败 ${r::class.simpleName} ${r.metadata.clientRecordId}: ${e2.message}")
                     }
                 }
             }
         }
-        return ok
+        return WriteResult(counts, granted)
     }
 
     companion object {
@@ -88,6 +97,21 @@ class HealthConnectWriter(context: Context) {
         )
 
         val PERMISSIONS: Set<String> = RECORD_TYPES.map { HealthPermission.getWritePermission(it) }.toSet()
+
+        /** 界面上显示的中文名称，顺序与 [RECORD_TYPES] 一致。 */
+        val LABELS: Map<KClass<out Record>, String> = mapOf(
+            StepsRecord::class to "步数",
+            DistanceRecord::class to "距离",
+            ActiveCaloriesBurnedRecord::class to "活动热量",
+            HeartRateRecord::class to "心率",
+            RestingHeartRateRecord::class to "静息心率",
+            OxygenSaturationRecord::class to "血氧",
+            SleepSessionRecord::class to "睡眠",
+            RespiratoryRateRecord::class to "呼吸频率",
+            WeightRecord::class to "体重",
+            BodyFatRecord::class to "体脂率",
+            ExerciseSessionRecord::class to "运动记录",
+        )
 
         fun sdkStatus(context: Context): Int = HealthConnectClient.getSdkStatus(context)
     }

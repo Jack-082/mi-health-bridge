@@ -55,6 +55,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkQuery
 import io.github.mihealthbridge.hc.HealthConnectWriter
 import io.github.mihealthbridge.sync.Settings
+import io.github.mihealthbridge.sync.SyncReport
 import io.github.mihealthbridge.sync.SyncScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -73,6 +74,7 @@ internal data class UiState(
     val fastMinutes: Int,
     val initialDays: Int,
     val log: String,
+    val report: SyncReport?,
 )
 
 /** 后台同步任务的状态。 */
@@ -155,6 +157,7 @@ class MainActivity : ComponentActivity() {
         fastMinutes = settings.fastIntervalMinutes,
         initialDays = settings.initialDays,
         log = settings.log,
+        report = SyncReport.fromJson(settings.lastReport),
     )
 
     private fun openLogin() = loginLauncher.launch(Intent(this, LoginActivity::class.java))
@@ -300,21 +303,40 @@ class MainActivity : ComponentActivity() {
             }
 
             val logLines = s.log.lines().filter { it.isNotBlank() }
-            CollapsibleSection(
-                title = "日志",
-                summary = if (logLines.isEmpty()) "暂无" else "${logLines.size} 行",
-                expanded = logExpanded,
-                onToggle = { logExpanded = !logExpanded },
-            ) {
-                SecondaryButton("复制全部日志", Modifier.fillMaxWidth()) {
-                    clipboard.setText(AnnotatedString(s.log))
-                    toast("已复制 ${logLines.size} 行日志")
+            Section("日志") {
+                // 模块一：最近一次同步，11 类数据各自的结果
+                val report = s.report
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("最近一次同步", Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Palette.Ink)
+                    if (report != null) Caption(fmt(report.atMillis))
                 }
-                Box(Modifier.fillMaxWidth().background(Palette.Tint, RoundedCornerShape(8.dp)).padding(12.dp)) {
-                    Text(
-                        logLines.takeLast(60).reversed().joinToString("\n").ifEmpty { "暂无" },
-                        fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp, color = Palette.Ink,
-                    )
+                if (report == null) {
+                    Caption("还没有同步记录。")
+                } else {
+                    Caption(reportSummary(report))
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        report.items.forEach { TypeResultRow(it) }
+                    }
+                }
+
+                // 模块二：详细日志，默认折叠
+                ExpandableHeader(
+                    title = "详细日志",
+                    summary = if (logLines.isEmpty()) "暂无" else "${logLines.size} 行",
+                    expanded = logExpanded,
+                    onToggle = { logExpanded = !logExpanded },
+                )
+                if (logExpanded) {
+                    SecondaryButton("复制全部日志", Modifier.fillMaxWidth()) {
+                        clipboard.setText(AnnotatedString(s.log))
+                        toast("已复制 ${logLines.size} 行日志")
+                    }
+                    Box(Modifier.fillMaxWidth().background(Palette.Tint, RoundedCornerShape(8.dp)).padding(12.dp)) {
+                        Text(
+                            logLines.takeLast(60).reversed().joinToString("\n").ifEmpty { "暂无" },
+                            fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 16.sp, color = Palette.Ink,
+                        )
+                    }
                 }
             }
 
@@ -327,4 +349,47 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun fmt(ms: Long) = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date(ms))
+
+    private fun fmtShort(sec: Long) = SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(Date(sec * 1000))
+
+    /** 例如：已同步 6 · 无新数据 4 · 失败 1 · 范围 11-23 00:00 → 11-24 13:05 */
+    private fun reportSummary(r: SyncReport): String {
+        val order = listOf(
+            SyncReport.State.Synced to "已同步", SyncReport.State.Partial to "部分失败",
+            SyncReport.State.NoData to "无新数据", SyncReport.State.Failed to "失败",
+            SyncReport.State.Unauthorized to "未授权",
+        )
+        val counts = order.mapNotNull { (state, name) ->
+            r.items.count { it.state == state }.takeIf { it > 0 }?.let { "$name $it" }
+        }
+        val range = if (r.windowStartSec > 0) listOf("范围 ${fmtShort(r.windowStartSec)} → ${fmtShort(r.windowEndSec)}") else emptyList()
+        return (counts + range).joinToString(" · ")
+    }
+
+    @Composable
+    private fun TypeResultRow(item: SyncReport.TypeResult) {
+        val (status, text) = when (item.state) {
+            SyncReport.State.Synced -> Status.Ok to "已同步 ${item.written} 条"
+            SyncReport.State.Partial -> Status.Warn to "${item.written} 条成功，${item.failed} 条失败"
+            SyncReport.State.NoData -> Status.None to "无新数据"
+            SyncReport.State.Failed -> Status.Error to "失败"
+            SyncReport.State.Unauthorized -> Status.Warn to "未授权"
+        }
+        Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Dot(status.color)
+                Spacer(Modifier.width(8.dp))
+                Text(item.label, Modifier.weight(1f), fontSize = 13.sp, color = Palette.Ink)
+                Text(text, fontSize = 13.sp, color = if (status == Status.None) Palette.Muted else Palette.Ink)
+            }
+            val reason = item.reason
+            if (reason != null && item.state != SyncReport.State.NoData && item.state != SyncReport.State.Synced) {
+                Text(
+                    reason, Modifier.padding(start = 15.dp, top = 2.dp),
+                    fontSize = 11.sp, lineHeight = 15.sp,
+                    color = if (item.state == SyncReport.State.Failed) Palette.Red else Palette.Muted,
+                )
+            }
+        }
+    }
 }

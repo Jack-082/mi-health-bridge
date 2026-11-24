@@ -54,6 +54,11 @@ class Settings(context: Context) {
         get() = prefs.getInt("fastInterval", 0)
         set(v) = prefs.edit().putInt("fastInterval", v).apply()
 
+    /** 最近一次同步的分类型结果（[SyncReport] 的 JSON）。 */
+    var lastReport: String
+        get() = prefs.getString("lastReport", "") ?: ""
+        set(v) = prefs.edit().putString("lastReport", v).apply()
+
     var needsRelogin: Boolean
         get() = prefs.getBoolean("needsRelogin", false)
         set(v) = prefs.edit().putBoolean("needsRelogin", v).apply()

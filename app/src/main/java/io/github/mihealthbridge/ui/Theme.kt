@@ -94,31 +94,18 @@ fun Section(title: String, status: Status? = null, content: @Composable ColumnSc
     }
 }
 
-/** 可折叠的卡片分区：点标题行展开/收起。 */
+/** 卡片内的可折叠标题行：点击展开/收起。 */
 @Composable
-fun CollapsibleSection(
-    title: String,
-    summary: String,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    Column(Modifier.card()) {
-        Row(
-            Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Palette.Ink)
-            Spacer(Modifier.width(8.dp))
-            Text(summary, Modifier.weight(1f), fontSize = 12.sp, color = Palette.Muted)
-            Text(if (expanded) "收起 ▴" else "展开 ▾", fontSize = 13.sp, color = Palette.Navy)
-        }
-        if (expanded) {
-            Column(
-                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) { content() }
-        }
+fun ExpandableHeader(title: String, summary: String, expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(SmallShape).background(Palette.Tint)
+            .clickable(onClick = onToggle).padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Palette.Ink)
+        Spacer(Modifier.width(8.dp))
+        Text(summary, Modifier.weight(1f), fontSize = 12.sp, color = Palette.Muted)
+        Text(if (expanded) "收起 ▴" else "展开 ▾", fontSize = 13.sp, color = Palette.Navy)
     }
 }
 
