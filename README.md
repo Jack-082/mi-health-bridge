@@ -56,7 +56,7 @@ NFC 公交卡、支付、消息通知、表盘这些官方功能都不受影响�
 
 绑定在米家 App 的体脂秤（如小米体脂秤 S400），称重数据也会上传到小米云。打开「米家体脂秤」开关后，应用会用同一个小米账号读取，不需要另外登录米家。
 
-- 型号自动探测：先读取米家账号里绑定的秤的真实型号，再试已知型号：`yunmai.scales.ms103`（国行 S400）、`yunmai.scales.ms107`、`xiaomi.scales.ms110`、`yunmai.scales.ms104`。
+- 型号自动探测：先读取米家账号里绑定的秤的真实型号，再试已知型号：`wole.scales.mjh05`（如一 MJH-05）、`yunmai.scales.ms103`（国行 S400）、`yunmai.scales.ms107`、`xiaomi.scales.ms110`、`yunmai.scales.ms104`。
 - 秤上有多位家庭成员时，必须先在界面里选择你自己，否则不写入，避免家人的体重混进你的健康数据。
 - 第三方生态链秤（如「米家智联」的 MJH-05）不一定走体脂秤专用接口。可以点卡片里的「诊断」：应用会列出账号下的秤，逐一尝试体脂秤接口和米家设备历史接口（按 [MIoT 设备规范](https://miot-spec.org) 查询属性和事件），把能拿到的原始数据写进日志，方便适配新型号。
 - 接口和字段参考 [SmartScaleConnect](https://github.com/AlexxIT/SmartScaleConnect)（MIT），只在中国大陆区账号上可用，未在所有型号上实测。

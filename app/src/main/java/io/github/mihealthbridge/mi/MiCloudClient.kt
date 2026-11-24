@@ -99,24 +99,39 @@ class MiCloudClient(
         paginate(session, SPORT_PATH, "sport", startSec, endSec, limit = 50, listField = "sport_records")
 
     /**
-     * 米家 App 绑定的体脂秤：经小米运动健康云的 eco 代理接口按型号查询（仅中国大陆区）。
+     * 米家 App 绑定的体脂秤，按型号查询（仅中国大陆区），两个入口：
+     * - [direct] = false：小米运动健康云的 eco 代理（本客户端需是 miothealth 会话）
+     * - [direct] = true：米家云 /eco/scale/getData（本客户端需是 xiaomiio 会话，米家 App 用的就是它）
      * 从最新一条往前翻页，每页 20 条；翻到早于 [sinceMs] 的数据就停止。
      */
-    fun fetchScaleData(session: MiSession, model: String, sinceMs: Long): List<ScaleWeighIn> {
+    fun fetchScaleData(session: MiSession, model: String, sinceMs: Long, direct: Boolean = false): List<ScaleWeighIn> {
         val uid = session.userId.toLongOrNull() ?: throw IOException("userId 不是数字：${session.userId}")
         val out = ArrayList<ScaleWeighIn>()
         var begin = System.currentTimeMillis()
         for (page in 1..MAX_PAGES) {
-            val inner = "{\"param\":{\"endTime\":1,\"beginTime\":$begin},\"model\":${JSONObject.quote(model)},\"uid\":$uid,\"did\":0}"
-            val data = "{\"eco_api\":\"eco/scale/getData\",\"params\":${JSONObject.quote(inner)}}"
-            val items = ecoProxyArray(request(session, ECO_PROXY_PATH, data))
+            val items = fetchScalePage(session, model, begin, direct, uid)
             val (weighIns, count, oldest) = MiScaleParser.parsePage(items)
+            if (count > 0 && weighIns.isEmpty()) {
+                throw MiApiException(-1, "有 $count 条称重记录但格式无法解析，示例：${items.optJSONObject(0)?.toString()?.take(300)}")
+            }
             out += weighIns
             if (count < SCALE_PAGE_SIZE || oldest == null || oldest < sinceMs || oldest >= begin) return out
             begin = oldest
             Thread.sleep(200)
         }
         throw IOException("体脂秤分页超过上限")
+    }
+
+    /** 体脂秤接口的一页原始数据（从 [beginMs] 往前最多 20 条），诊断时也直接用它看原始格式。 */
+    fun fetchScalePage(session: MiSession, model: String, beginMs: Long, direct: Boolean, uid: Long? = null): JSONArray {
+        val u = uid ?: session.userId.toLongOrNull() ?: throw IOException("userId 不是数字：${session.userId}")
+        val inner = "{\"param\":{\"endTime\":1,\"beginTime\":$beginMs},\"model\":${JSONObject.quote(model)},\"uid\":$u,\"did\":0}"
+        return if (direct) {
+            request(session, ECO_SCALE_PATH, inner, mapOf("MIOT-REQUEST-MODEL" to model)).optJSONArray("list") ?: JSONArray()
+        } else {
+            val data = "{\"eco_api\":\"eco/scale/getData\",\"params\":${JSONObject.quote(inner)}}"
+            ecoProxyArray(request(session, ECO_PROXY_PATH, data))
+        }
     }
 
     /** eco 代理的结果是 {"resp": "<JSON 字符串>"}，里面再包一层 {code, message, result}。 */
@@ -156,12 +171,12 @@ class MiCloudClient(
     /** 通用签名请求，返回响应中的 result 对象。 */
     fun call(session: MiSession, path: String, data: String): JSONObject = request(session, path, data)
 
-    private fun request(session: MiSession, path: String, data: String): JSONObject {
+    private fun request(session: MiSession, path: String, data: String, headers: Map<String, String> = emptyMap()): JSONObject {
         var last: Exception? = null
         for (attempt in 0..2) {
             if (attempt > 0) Thread.sleep(1000L shl (attempt - 1))
             try {
-                return requestOnce(session, path, data)
+                return requestOnce(session, path, data, headers)
             } catch (e: IOException) {
                 last = e // 网络/5xx 重试；认证与业务错误直接抛出
             }
@@ -169,7 +184,7 @@ class MiCloudClient(
         throw last ?: IOException("请求失败")
     }
 
-    private fun requestOnce(session: MiSession, path: String, data: String): JSONObject {
+    private fun requestOnce(session: MiSession, path: String, data: String, headers: Map<String, String>): JSONObject {
         val nonce = MiCrypto.genNonce()
         val signedNonce = MiCrypto.signedNonce(MiCrypto.unb64(session.ssecurity), nonce)
         val form = FormBody.Builder().apply {
@@ -178,7 +193,7 @@ class MiCloudClient(
         val req = Request.Builder()
             .url(baseUrl + path)
             .header("Cookie", session.cookies)
-            .apply { extraHeaders.forEach { (k, v) -> header(k, v) } }
+            .apply { (extraHeaders + headers).forEach { (k, v) -> header(k, v) } }
             .post(form)
             .build()
         val body = http.newCall(req).execute().use { resp ->
@@ -201,6 +216,7 @@ class MiCloudClient(
         return when (val r = obj.opt("result")) {
             is JSONObject -> r
             is JSONArray -> JSONObject().put("list", r) // 米家部分接口直接返回数组
+            is String -> runCatching { JSONObject().put("list", JSONArray(r)) }.getOrDefault(JSONObject())
             else -> JSONObject()
         }
     }
@@ -211,6 +227,7 @@ class MiCloudClient(
         private const val DATA_PATH = "/app/v1/data/get_fitness_data_by_time"
         private const val SPORT_PATH = "/app/v1/data/get_sport_records_by_time"
         private const val ECO_PROXY_PATH = "/app/v1/eco/api_proxy"
+        private const val ECO_SCALE_PATH = "/eco/scale/getData"
         private const val SCALE_PAGE_SIZE = 20
         private const val MAX_PAGES = 200
         private const val AUTH_ERROR_CODE = 70016

@@ -29,6 +29,7 @@ object MiScaleParser {
 
     /** 型号候选：先试国行 S400，再试其他已知米家体脂秤型号。 */
     val CANDIDATE_MODELS = listOf(
+        "wole.scales.mjh05",   // 如一智能体脂秤 MJH-05（米家生态）
         "yunmai.scales.ms103", // 小米体脂秤 S400（国行）
         "yunmai.scales.ms107",
         "xiaomi.scales.ms110",

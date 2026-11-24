@@ -74,6 +74,11 @@ class Settings(context: Context) {
         get() = prefs.getString("scaleModel", "") ?: ""
         set(v) = prefs.edit().putString("scaleModel", v).apply()
 
+    /** true：体脂秤数据走米家云 /eco/scale/getData；false：走小米运动健康的 eco 代理。 */
+    var scaleDirect: Boolean
+        get() = prefs.getBoolean("scaleDirect", true)
+        set(v) = prefs.edit().putBoolean("scaleDirect", v).apply()
+
     /** 上次探测型号的时刻；没探测到时每 6 小时最多重试一次。 */
     var scaleProbeAt: Long
         get() = prefs.getLong("scaleProbeAt", 0L)

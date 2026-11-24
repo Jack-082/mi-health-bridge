@@ -2,6 +2,7 @@ package io.github.mihealthbridge.sync
 
 import android.content.Context
 import io.github.mihealthbridge.mi.MiCloudClient
+import io.github.mihealthbridge.mi.MiScaleParser
 import io.github.mihealthbridge.mi.MiSession
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -49,6 +50,10 @@ class MiHomeProbe(context: Context) {
             )
         }
     }
+
+    /** 米家云体脂秤接口（米家 App 读取称重记录用的同一个接口）。 */
+    fun fetchScale(s: MiSession, model: String, sinceMs: Long) =
+        home.fetchScaleData(s, model, sinceMs, direct = true)
 
     /** 名称或型号像体脂秤的设备。 */
     fun scales(devices: List<MiHomeDevice>) = devices.filter {
@@ -113,13 +118,23 @@ class MiHomeProbe(context: Context) {
         for (d in scales) {
             log("秤：${d.name} | model=${d.model} | spec=${d.specType ?: "无"}")
 
-            // 1) 体脂秤专用接口（云麦/小米秤走这里）
-            try {
-                val list = health.fetchScaleData(healthSession, d.model, Long.MAX_VALUE)
-                log("  [体脂秤接口] ${list.size} 条" + (list.firstOrNull()?.let { "，示例：$it" } ?: ""))
-                if (list.isNotEmpty() && usable == null) usable = d.model
-            } catch (e: Exception) {
-                log("  [体脂秤接口] 失败：${e.message ?: e.javaClass.simpleName}")
+            // 1) 体脂秤专用接口：米家云直连、小米运动健康代理各试一次
+            for (direct in listOf(true, false)) {
+                val tag = if (direct) "体脂秤接口·米家云" else "体脂秤接口·运动健康代理"
+                try {
+                    val raw = if (direct) home.fetchScalePage(hs, d.model, System.currentTimeMillis(), true)
+                    else health.fetchScalePage(healthSession, d.model, System.currentTimeMillis(), false)
+                    val list = MiScaleParser.parsePage(raw).first
+                    log("  [$tag] 原始 ${raw.length()} 条，解析出 ${list.size} 条")
+                    raw.optJSONObject(0)?.let { log("    原始示例：${it.toString().take(800)}") }
+                    list.firstOrNull()?.let { log("    解析示例：$it") }
+                    if (list.isNotEmpty() && usable == null) {
+                        usable = d.model
+                        settings.scaleDirect = direct
+                    }
+                } catch (e: Exception) {
+                    log("  [$tag] 失败：${e.message ?: e.javaClass.simpleName}")
+                }
             }
 
             // 2) 米家设备历史：按设备规范逐个属性 / 事件查询

@@ -231,6 +231,24 @@ class SyncEngine(private val context: Context) {
      * 秤上有多位家庭成员且未选择本人时抛错：不写入，也不推进同步窗口，选好成员后下次同步会补上。
      */
     private fun fetchMijiaScale(s: MiSession, startSec: Long): List<ScaleWeighIn> {
+        val probe = MiHomeProbe(context)
+        var homeSession: MiSession? = null
+        // 米家云的认证错误只影响体脂秤这一项，转成普通错误，避免把整个账号标记为需要重新登录
+        fun home(): MiSession = homeSession ?: try {
+            probe.login().also { homeSession = it }
+        } catch (e: MiAuthException) {
+            throw IOException("米家云登录失败：${e.message}")
+        }
+        /** direct = true 走米家云 /eco/scale/getData，否则走小米运动健康的 eco 代理。 */
+        fun fetch(model: String, direct: Boolean, sinceMs: Long): List<ScaleWeighIn> =
+            if (direct) {
+                try {
+                    probe.fetchScale(home(), model, sinceMs)
+                } catch (e: MiAuthException) {
+                    throw IOException("米家云会话失效：${e.message}")
+                }
+            } else cloud.fetchScaleData(s, model, sinceMs)
+
         var model = settings.scaleModel
         if (model.isEmpty()) {
             val now = System.currentTimeMillis()
@@ -240,34 +258,39 @@ class SyncEngine(private val context: Context) {
             settings.scaleProbeAt = now
             // 优先用米家账号里真实绑定的秤的型号，再试已知型号
             val accountModels = try {
-                val probe = MiHomeProbe(context)
-                probe.scales(probe.listDevices(probe.login())).map { it.model }.also {
+                probe.scales(probe.listDevices(home())).map { it.model }.also {
                     log("米家账号中的体脂秤型号：${it.ifEmpty { listOf("无") }.joinToString()}")
                 }
             } catch (e: Exception) {
                 log("读取米家设备列表失败：${e.message ?: e.javaClass.simpleName}")
                 emptyList()
             }
-            for (m in (accountModels + MiScaleParser.CANDIDATE_MODELS).distinct()) {
-                val found = try {
-                    cloud.fetchScaleData(s, m, Long.MAX_VALUE)
-                } catch (e: MiAuthException) {
-                    throw e
-                } catch (e: Exception) {
-                    log("探测体脂秤型号 $m：${e.message ?: e.javaClass.simpleName}")
-                    emptyList()
+            probing@ for (m in (accountModels + MiScaleParser.CANDIDATE_MODELS).distinct()) {
+                for (direct in listOf(true, false)) {
+                    val found = try {
+                        fetch(m, direct, Long.MAX_VALUE) // 只看第一页
+                    } catch (e: MiAuthException) {
+                        throw e
+                    } catch (e: Exception) {
+                        log("探测 $m（${if (direct) "米家云" else "运动健康代理"}）：${e.message ?: e.javaClass.simpleName}")
+                        emptyList()
+                    }
+                    if (found.isNotEmpty()) {
+                        model = m
+                        settings.scaleDirect = direct
+                        break@probing
+                    }
                 }
-                if (found.isNotEmpty()) { model = m; break }
             }
             if (model.isEmpty()) {
                 throw IOException("没有找到米家体脂秤数据：请确认秤已绑定在米家 App，且至少称过一次")
             }
             settings.scaleModel = model
-            log("米家体脂秤型号：$model")
+            log("米家体脂秤型号：$model（${if (settings.scaleDirect) "米家云" else "运动健康代理"}）")
         }
 
         val sinceMs = startSec * 1000
-        val all = cloud.fetchScaleData(s, model, sinceMs)
+        val all = fetch(model, settings.scaleDirect, sinceMs)
         val members = (settings.scaleMembersSeen + all.mapNotNull { it.member }).distinct()
         settings.scaleMembersSeen = members
         val inWindow = all.filter { it.timeSec * 1000 >= sinceMs }
