@@ -47,7 +47,8 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           missing=""
-          for v in SIGNING_STORE_PASSWORD SIGNING_KEY_ALIAS SIGNING_KEY_PASSWORD; do
+          # SIGNING_KEY_PASSWORD 可选：不配置时使用 SIGNING_STORE_PASSWORD
+          for v in SIGNING_STORE_PASSWORD SIGNING_KEY_ALIAS; do
             [ -n "${!v}" ] || missing="$missing $v"
           done
           if [ -n "$missing" ]; then
@@ -57,6 +58,9 @@ jobs:
           # 去掉粘贴时可能带进来的空格和换行
           printf '%s' "$KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "keystore 大小：$(wc -c < "$RUNNER_TEMP/release.jks") 字节"
+          if [ -n "$SIGNING_KEY_PASSWORD" ] && [ "$SIGNING_KEY_PASSWORD" != "$SIGNING_STORE_PASSWORD" ]; then
+            echo "::warning::SIGNING_KEY_PASSWORD 与 SIGNING_STORE_PASSWORD 不同；用 openssl 生成的 keystore 两者应相同，建议删除 SIGNING_KEY_PASSWORD"
+          fi
           echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
       - name: Assemble release APK
