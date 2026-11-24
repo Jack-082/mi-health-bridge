@@ -1,0 +1,10 @@
+MiHealthBridge
+Copyright 2026 MiHealthBridge contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The Xiaomi health cloud request protocol (login exchange, RC4/SHA signing,
+endpoint paths and field parsing) is ported from HealthMi
+(https://github.com/ShawnDiego/HealthMi, Apache-2.0), which in turn is based on
+mi-fitness-mcp-cn (MIT, Copyright (c) 2026 Aleksej Kubulashvili).
+The crypto unit-test vectors come from the same project.
