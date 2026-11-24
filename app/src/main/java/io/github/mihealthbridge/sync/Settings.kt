@@ -31,6 +31,15 @@ class Settings(context: Context) {
         get() = secure.getString("session", null)?.let { MiSession.fromJson(it) }
         set(v) = secure.edit().putString("session", v?.toJson()).apply()
 
+    /** 米家体脂秤的 MiBeacon 广播密钥（hex），蓝牙诊断时从云端获取。 */
+    var scaleBeaconKey: String?
+        get() = secure.getString("scaleBeaconKey", null)
+        set(v) = secure.edit().putString("scaleBeaconKey", v).apply()
+
+    var scaleMac: String?
+        get() = secure.getString("scaleMac", null)
+        set(v) = secure.edit().putString("scaleMac", v).apply()
+
     val isLoggedIn: Boolean get() = !userId.isNullOrEmpty() && !passToken.isNullOrEmpty()
 
     fun logout() = secure.edit().clear().apply()

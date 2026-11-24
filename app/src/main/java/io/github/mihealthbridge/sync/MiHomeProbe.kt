@@ -11,7 +11,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /** 米家账号下的一台设备。 */
-data class MiHomeDevice(val did: String, val name: String, val model: String, val specType: String?)
+data class MiHomeDevice(val did: String, val name: String, val model: String, val specType: String?, val mac: String)
 
 /**
  * 米家云（api.io.mi.com，sid=xiaomiio）：列设备、查设备历史数据。
@@ -47,8 +47,15 @@ class MiHomeProbe(context: Context) {
                 name = d.optString("name"),
                 model = d.optString("model"),
                 specType = d.optString("spec_type").ifEmpty { null },
+                mac = d.optString("mac").uppercase(),
             )
         }
+    }
+
+    /** 蓝牙设备的 MiBeacon 广播密钥（hex）；拿不到返回 null。 */
+    fun beaconKey(s: MiSession, did: String): String? {
+        val data = JSONObject().put("did", did).put("pdid", 1).toString()
+        return home.call(s, "/v2/device/blt_get_beaconkey", data).optString("beaconkey").ifEmpty { null }
     }
 
     /** 米家云体脂秤接口（米家 App 读取称重记录用的同一个接口）。 */
