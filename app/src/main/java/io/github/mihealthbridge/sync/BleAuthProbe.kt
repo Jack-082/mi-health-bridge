@@ -69,13 +69,18 @@ class BleAuthProbe(private val context: Context) {
         // 3) 连接
         val t0 = System.currentTimeMillis()
         fun ts() = "+%.1fs".format((System.currentTimeMillis() - t0) / 1000.0)
-        val queues = HashMap<UUID, Channel<ByteArray>>().apply { MiBle.NOTIFY.forEach { put(it, Channel(Channel.UNLIMITED)) } }
+        val queues = HashMap<UUID, Channel<ByteArray>>().apply {
+            (MiBle.NOTIFY + MIOT_NOTIFY).forEach { put(it, Channel(Channel.UNLIMITED)) }
+        }
         var pending: CompletableDeferred<Int>? = null
         val connected = CompletableDeferred<Boolean>()
         val disconnected = CompletableDeferred<Unit>()
 
+        // 登录前：按特征分队列给握手用；登录后：所有通知进同一个队列，统一记录与重组
+        var loggedIn = false
+        val post = Channel<Pair<UUID, ByteArray>>(Channel.UNLIMITED)
         fun onNotify(uuid: UUID, v: ByteArray) {
-            queues[uuid]?.trySend(v)
+            if (loggedIn && uuid != MiBle.VEND1A) post.trySend(uuid to v) else queues[uuid]?.trySend(v)
         }
         val cb = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -84,6 +89,7 @@ class BleAuthProbe(private val context: Context) {
                     log("  ${ts()} 连接断开 status=$status")
                     connected.complete(false); disconnected.complete(Unit); pending?.complete(-1)
                     queues.values.forEach { it.close() }
+                    post.close()
                 }
             }
             override fun onServicesDiscovered(g: BluetoothGatt, status: Int) { pending?.complete(status) }
@@ -141,9 +147,9 @@ class BleAuthProbe(private val context: Context) {
             log("  ${ts()} 已连接")
             runCatching { op("MTU") { gatt.requestMtu(247) } }
             if (op("发现服务") { gatt.discoverServices() } != BluetoothGatt.GATT_SUCCESS) { log("发现服务失败"); return }
-            chars = gatt.getService(MiBle.SERVICE)?.characteristics?.associateBy { it.uuid }
-                ?: run { log("秤上没有 FE95 服务"); return }
-            for (uuid in MiBle.NOTIFY) {
+            chars = gatt.services.flatMap { it.characteristics }.associateBy { it.uuid }
+            if (gatt.getService(MiBle.SERVICE) == null) { log("秤上没有 FE95 服务"); return }
+            for (uuid in MiBle.NOTIFY + MIOT_NOTIFY) {
                 val c = chars[uuid] ?: continue
                 val cccd = c.getDescriptor(CCCD) ?: continue
                 gatt.setCharacteristicNotification(c, true)
@@ -177,73 +183,89 @@ class BleAuthProbe(private val context: Context) {
             if (!result.contentEquals(MiBle.CFM_LOGIN_OK)) throw AuthError("登录被拒绝：${MiBeacon.hex(result)}")
             log("  ${ts()} ✅ 米家登录成功")
 
-            // 5) 加密通道：收包、解密、记录
-            var expected = 0
-            var buf = ByteArray(0)
-            var parcelType = 0
+            loggedIn = true
+
+            // 5) 登录后所有通知：原样记录；按分包协议重组，能解密就解密
+            class Assembler { var expected = 0; var buf = ByteArray(0); var type = 0 }
+            val assemblers = HashMap<UUID, Assembler>()
             var received = 0
+            var notifications = 0
+            /** 分包应答写到哪个特征：0x1B 写回自身，mi.miot.ble 的 0x102 写到 0x101。 */
+            fun ackTarget(uuid: UUID) = if (uuid == MIOT_NOTIFY) MIOT_WRITE else uuid
             suspend fun pump(untilMs: Long) {
                 val deadline = System.currentTimeMillis() + untilMs
                 while (true) {
                     val left = deadline - System.currentTimeMillis()
                     if (left <= 0 || disconnected.isCompleted) return
-                    val data = withTimeoutOrNull(left) { queues.getValue(MiBle.CMTP).receiveCatching().getOrNull() } ?: return
+                    val (uuid, data) = withTimeoutOrNull(left) { post.receiveCatching().getOrNull() } ?: return
+                    notifications++
+                    log("  ${ts()} 通知 ${short(uuid)} = ${MiBeacon.hex(data)}")
+                    val a = assemblers.getOrPut(uuid) { Assembler() }
                     if (data.size >= 6 && data[0].toInt() == 0 && data[1].toInt() == 0 && data[2].toInt() == 0 && data[5].toInt() == 0) {
-                        expected = data[4].toInt() and 0xFF
-                        parcelType = data[3].toInt() and 0xFF
-                        buf = ByteArray(0)
-                        write(MiBle.CMTP, MiBle.RCV_RDY)
+                        a.expected = data[4].toInt() and 0xFF
+                        a.type = data[3].toInt() and 0xFF
+                        a.buf = ByteArray(0)
+                        if (chars.containsKey(ackTarget(uuid))) runCatching { write(ackTarget(uuid), MiBle.RCV_RDY) }
                         continue
                     }
-                    if (data.size >= 2 && data[1].toInt() == 0 && expected > 0) {
-                        buf += data.copyOfRange(2, data.size)
-                        if ((data[0].toInt() and 0xFF) >= expected) {
-                            write(MiBle.CMTP, MiBle.RCV_OK)
-                            expected = 0
-                            val plain = MiBle.decrypt(keys, buf)
+                    if (data.size >= 2 && data[1].toInt() == 0 && a.expected > 0) {
+                        a.buf += data.copyOfRange(2, data.size)
+                        if ((data[0].toInt() and 0xFF) >= a.expected) {
+                            if (chars.containsKey(ackTarget(uuid))) runCatching { write(ackTarget(uuid), MiBle.RCV_OK) }
+                            a.expected = 0
                             received++
-                            if (plain == null) log("  ${ts()} 收到加密消息但解密失败：${MiBeacon.hex(buf)}")
-                            else log("  ${ts()} 明文 ${MiBeacon.hex(plain)}${ascii(plain)}" + (MiBle.describe(plain)?.let { " → $it" } ?: ""))
+                            val plain = MiBle.decrypt(keys, a.buf)
+                            if (plain == null) log("    重组 ${a.buf.size} 字节，解密失败：${MiBeacon.hex(a.buf)}")
+                            else log("    明文 ${MiBeacon.hex(plain)}${ascii(plain)}" + (MiBle.describe(plain)?.let { " → $it" } ?: ""))
                         }
                         continue
                     }
-                    log("  ${ts()} 0x1B 其他帧 ${MiBeacon.hex(data)}")
+                    // 不是分包格式：直接尝试解密 / 按 MIoT 解析
+                    MiBle.decrypt(keys, data)?.let { log("    直接解密 ${MiBeacon.hex(it)}" + (MiBle.describe(it)?.let { d -> " → $d" } ?: "")) }
+                    MiBle.describe(data)?.let { log("    MIoT 明文 → $it") }
                 }
             }
 
-            log("监听秤主动推送 25 秒（请保持站在秤上）")
-            pump(25_000)
-
-            // 6) 主动查询属性（只读）
-            if (!disconnected.isCompleted) {
-                val props = buildList {
-                    for (p in 1..12) add(2 to p)
-                    for (p in 1..3) add(3 to p)
-                    for (p in 1..6) add(4 to p)
-                    for (p in 1..3) add(5 to p)
-                }
-                var counter = 1
-                for ((i, batch) in props.chunked(6).withIndex()) {
-                    if (disconnected.isCompleted) break
-                    val msg = MiBle.getProperties(100 + i, batch)
-                    val payload = MiBle.encrypt(keys, counter++, msg)
-                    val frames = MiBle.parcelFrames(payload)
-                    try {
-                        // 清掉 0x1A 上残留的应答
-                        while (queues.getValue(MiBle.VEND1A).tryReceive().isSuccess) Unit
-                        write(MiBle.VEND1A, byteArrayOf(0, 0, 0, parcelType.toByte(), frames.size.toByte(), 0))
-                        expect(MiBle.VEND1A, MiBle.RCV_RDY, "查询属性 RDY")
-                        for (f in frames) { write(MiBle.VEND1A, f); delay(20) }
-                        expect(MiBle.VEND1A, MiBle.RCV_OK, "查询属性 OK")
-                        log("  ${ts()} 已查询 " + batch.joinToString(",") { "${it.first}.${it.second}" })
-                    } catch (e: AuthError) {
-                        log("  ${ts()} 查询失败：${e.message}")
-                    }
-                    pump(3_000)
-                }
-                pump(10_000)
+            // 6) 立即主动查询属性（秤约 20 秒后会自己断开，所以先查再听）
+            val props = buildList {
+                for (p in 1..12) add(2 to p)
+                for (p in 1..3) add(3 to p)
+                for (p in 1..6) add(4 to p)
             }
-            log("共收到加密消息 $received 条")
+            var counter = 1
+            suspend fun sendParcel(target: UUID, ackFrom: UUID, payload: ByteArray, label: String) {
+                val frames = MiBle.parcelFrames(payload)
+                val acks = queues.getValue(ackFrom)
+                while (acks.tryReceive().isSuccess) Unit
+                write(target, byteArrayOf(0, 0, 0, 0, frames.size.toByte(), 0))
+                expect(ackFrom, MiBle.RCV_RDY, "$label RDY")
+                for (f in frames) { write(target, f); delay(20) }
+                expect(ackFrom, MiBle.RCV_OK, "$label OK")
+            }
+            for ((i, batch) in props.chunked(7).withIndex()) {
+                if (disconnected.isCompleted) break
+                val label = "查询 " + batch.joinToString(",") { "${it.first}.${it.second}" }
+                try {
+                    sendParcel(MiBle.VEND1A, MiBle.VEND1A, MiBle.encrypt(keys, counter++, MiBle.getProperties(100 + i, batch)), label)
+                    log("  ${ts()} 已发送（0x1A）$label")
+                } catch (e: AuthError) {
+                    log("  ${ts()} $label 失败：${e.message}")
+                }
+                pump(1_500)
+            }
+            // mi.miot.ble 通道：同样的加密查询试一次
+            if (!disconnected.isCompleted && chars.containsKey(MIOT_WRITE)) {
+                try {
+                    write(MIOT_WRITE, MiBle.encrypt(keys, counter++, MiBle.getProperties(200, props.take(7))))
+                    log("  ${ts()} 已向 mi.miot.ble 0x101 发送加密查询（不分包）")
+                } catch (e: AuthError) {
+                    log("  ${ts()} mi.miot.ble 查询失败：${e.message}")
+                }
+            }
+            log("继续监听，直到秤断开（请保持站在秤上）")
+            pump(40_000)
+            log("登录后共收到通知 $notifications 条，重组出消息 $received 条")
+
         } catch (e: AuthError) {
             log("  ${ts()} ❌ ${e.message}")
         } finally {
@@ -254,7 +276,7 @@ class BleAuthProbe(private val context: Context) {
         }
     }
 
-    private fun short(u: UUID) = "0x" + u.toString().substring(4, 8)
+    private fun short(u: UUID) = "0x" + u.toString().substring(4, 8) + if (u.toString().endsWith("6f696d2e696d")) "(miot)" else ""
 
     private fun ascii(v: ByteArray): String {
         val printable = v.count { it in 0x20..0x7E }
@@ -262,6 +284,9 @@ class BleAuthProbe(private val context: Context) {
     }
 
     companion object {
+        /** 小米 MIoT over BLE 服务（UUID 尾部为倒序 ASCII "mi.miot.ble"）。 */
+        private val MIOT_WRITE: UUID = UUID.fromString("00000101-0065-6c62-2e74-6f696d2e696d")
+        private val MIOT_NOTIFY: UUID = UUID.fromString("00000102-0065-6c62-2e74-6f696d2e696d")
         private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 }
